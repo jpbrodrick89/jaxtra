@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaxtra"
+version = "0.1.0"
+description = "Exposes LAPACK ORMQR (orthogonal QR multiply) routines with a JAX-compatible API"
+requires-python = ">=3.9"
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+jax = ["jax"]
+test = ["pytest", "numpy", "scipy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jaxtra*"]
