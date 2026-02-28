@@ -1,8 +1,8 @@
 [build-system]
 requires = [
   "scikit-build-core>=0.9",
-  "pybind11>=3.0",
-  "jax",          # provides XLA FFI headers via jax.ffi.include_dir()
+  "nanobind>=2.0",  # same binding library as jaxlib; capsule::data() avoids name check
+  "jax",            # provides XLA FFI headers via jax.ffi.include_dir()
   "jaxlib",
 ]
 build-backend = "scikit_build_core.build"
@@ -46,11 +46,10 @@ build = "cp310-* cp311-* cp312-* cp313-*"
 skip  = "*-win32 *-manylinux_i686 *-musllinux*"
 
 # Install build dependencies inside each wheel environment.
-before-build = "pip install jax jaxlib pybind11 scikit-build-core"
+before-build = "pip install jax jaxlib nanobind scikit-build-core"
 
-# On Linux, repair with auditwheel to bundle the LAPACK .so.
+# On Linux, no system LAPACK needed: loaded at runtime from scipy.
 [tool.cibuildwheel.linux]
-before-all  = "yum install -y lapack-devel openblas-devel || apt-get install -y liblapack-dev libopenblas-dev"
 repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
 manylinux-x86_64-image = "manylinux_2_28"
 

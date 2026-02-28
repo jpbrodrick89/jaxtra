@@ -68,50 +68,13 @@ def _load_extension():
 def _register_targets() -> None:
     """Register XLA FFI targets for all dtype variants.
 
-    Mirrors jaxlib's initialize() mechanism: import scipy to force its bundled
-    OpenBLAS into the process, then extract raw LAPACK function pointers from
-    scipy.linalg.cython_lapack.__pyx_capi__ (PyCapsules) via ctypes and hand
-    them to the C++ extension.  No LAPACK link at wheel-build time.
+    Mirrors jaxlib's GetLapackKernelsFromScipy(): the C extension's
+    initialize() imports scipy.linalg.cython_lapack and extracts raw LAPACK
+    function pointers via nb::capsule::data() (no name check needed).
+    No LAPACK link at wheel-build time.
     """
-    import ctypes
-
     _jaxtra = _load_extension()
-
-    # Force scipy's OpenBLAS into the process and get its LAPACK capsules.
-    import scipy.linalg.cython_lapack as _cl  # noqa: triggers libopenblas load
-    _capi = _cl.__pyx_capi__
-
-    def _ptr(name: str) -> int:
-        """Extract raw C function pointer from a scipy Cython capsule.
-
-        scipy.linalg.cython_lapack.__pyx_capi__ stores each LAPACK function as
-        a PyCapsule whose name is the C signature string.  We first retrieve
-        that name, then pass it back to PyCapsule_GetPointer so the name check
-        succeeds.  The returned pointer is directly callable as the LAPACK
-        function (scipy's OpenBLAS uses a 'scipy_' namespace prefix internally
-        but the Cython module exposes the same ABI through these capsules).
-        """
-        cap = _capi[name]
-        ctypes.pythonapi.PyCapsule_GetName.restype = ctypes.c_char_p
-        ctypes.pythonapi.PyCapsule_GetName.argtypes = [ctypes.py_object]
-        cap_name = ctypes.pythonapi.PyCapsule_GetName(cap)
-
-        ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
-        ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [
-            ctypes.py_object, ctypes.c_char_p
-        ]
-        addr = ctypes.pythonapi.PyCapsule_GetPointer(cap, cap_name)
-        if not addr:
-            raise RuntimeError(f"Could not get function pointer for {name!r}")
-        return addr
-
-    _jaxtra.set_lapack_fn_ptrs(
-        _ptr("sormqr"),
-        _ptr("dormqr"),
-        _ptr("cunmqr"),
-        _ptr("zunmqr"),
-    )
-
+    _jaxtra.initialize()
     for platform, targets in _jaxtra.registrations().items():
         for name, capsule, api_version in targets:
             ffi.register_ffi_target(

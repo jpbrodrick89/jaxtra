@@ -1,30 +1,32 @@
 // pybind11 module for jaxtra: registers XLA FFI LAPACK ORMQR kernels.
 //
-// Pattern mirrors jaxlib.lapack: expose `registrations()` returning a dict
-// of {platform: [(name, capsule, api_version)]} so the Python layer can call
-// jax.ffi.register_ffi_target for each entry.
+// Uses nanobind (same as jaxlib) so that initialize() can extract raw LAPACK
+// function pointers from scipy's Cython capsules via nb::capsule::data(),
+// exactly mirroring jaxlib's GetLapackKernelsFromScipy().
 //
 // Handler names match JAX PR #35104 exactly (lapack_sormqr_ffi etc.) so that
 // if the PR is merged, jaxtra users can switch without changing call sites.
-//
-// set_lapack_fn_ptrs() is called at import time by jaxtra._core using ctypes
-// to extract raw pointers from scipy.linalg.cython_lapack.__pyx_capi__.  This
-// avoids linking against OpenBLAS at wheel-build time.
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <cstdint>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
 
 #include "lapack_kernels.h"
 #include "xla/ffi/api/ffi.h"
 
-namespace py = pybind11;
+namespace nb = nanobind;
 namespace ffi = xla::ffi;
 using namespace jaxtra;
 
 // ---------------------------------------------------------------------------
+// AssignKernelFn — mirrors jaxlib's AssignKernelFn template.
+// Sets the static fn pointer on a typed kernel struct.
+// ---------------------------------------------------------------------------
+template <typename Kernel>
+void AssignKernelFn(void* fn) {
+  Kernel::fn = reinterpret_cast<typename Kernel::FnType>(fn);
+}
+
+// ---------------------------------------------------------------------------
 // Handler macro — mirrors JAX_CPU_DEFINE_ORMQR from the upstream PR.
-// Binds a typed FFI handler for a single dtype, reducing the four-times
-// repetition of the Ffi::Bind() chain to a single macro call.
 // ---------------------------------------------------------------------------
 #define JAXTRA_DEFINE_ORMQR(name, dtype)                         \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
@@ -39,8 +41,7 @@ using namespace jaxtra;
 
 // ---------------------------------------------------------------------------
 // XLA FFI handler bindings (typed API, api_version=1).
-// Names match JAX PR #35104 so that downstream code can switch seamlessly
-// once the PR is merged into jaxlib proper.
+// Names match JAX PR #35104.
 // ---------------------------------------------------------------------------
 JAXTRA_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32);
 JAXTRA_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
@@ -51,53 +52,41 @@ JAXTRA_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
 // Module
 // ---------------------------------------------------------------------------
 
-PYBIND11_MODULE(_jaxtra, m) {
+NB_MODULE(_jaxtra, m) {
   m.doc() = "jaxtra C extension: LAPACK ORMQR via XLA FFI";
 
-  // set_lapack_fn_ptrs(sormqr, dormqr, cunmqr, zunmqr)
-  // Called from jaxtra._core._register_targets() via ctypes, passing raw
-  // function pointers extracted from scipy.linalg.cython_lapack.__pyx_capi__.
-  // Mirrors jaxlib's initialize() mechanism: no LAPACK link at build time.
-  m.def("set_lapack_fn_ptrs",
-        [](uintptr_t sormqr_ptr, uintptr_t dormqr_ptr,
-           uintptr_t cunmqr_ptr, uintptr_t zunmqr_ptr) {
-          OrthogonalQrMultiply<ffi::DataType::F32>::fn =
-              reinterpret_cast<OrthogonalQrMultiply<ffi::DataType::F32>::FnType>(sormqr_ptr);
-          OrthogonalQrMultiply<ffi::DataType::F64>::fn =
-              reinterpret_cast<OrthogonalQrMultiply<ffi::DataType::F64>::FnType>(dormqr_ptr);
-          OrthogonalQrMultiply<ffi::DataType::C64>::fn =
-              reinterpret_cast<OrthogonalQrMultiply<ffi::DataType::C64>::FnType>(cunmqr_ptr);
-          OrthogonalQrMultiply<ffi::DataType::C128>::fn =
-              reinterpret_cast<OrthogonalQrMultiply<ffi::DataType::C128>::FnType>(zunmqr_ptr);
-        });
+  // initialize() — mirrors jaxlib's GetLapackKernelsFromScipy().
+  // Imports scipy.linalg.cython_lapack, extracts raw function pointers from
+  // its __pyx_capi__ dict via nb::capsule::data() (no name check needed),
+  // and assigns them to the typed kernel structs.
+  m.def("initialize", []() {
+    nb::module_ cython_lapack =
+        nb::module_::import_("scipy.linalg.cython_lapack");
+    nb::dict lapack_capi = cython_lapack.attr("__pyx_capi__");
+    auto lapack_ptr = [&](const char* name) -> void* {
+      return nb::cast<nb::capsule>(lapack_capi[name]).data();
+    };
+    AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F32>>(lapack_ptr("sormqr"));
+    AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F64>>(lapack_ptr("dormqr"));
+    AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C64>>(lapack_ptr("cunmqr"));
+    AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C128>>(lapack_ptr("zunmqr"));
+  });
 
-  // Return registrations in the same format as jaxlib.lapack.registrations():
-  //   dict[platform, list[tuple[name, capsule, api_version]]]
-  // api_version=1 selects the typed XLA FFI (not the legacy custom-call API).
+  // registrations() — returns {platform: [(name, capsule, api_version)]}
+  // matching jaxlib.lapack.registrations() format.
   m.def("registrations", []() {
-    py::dict out;
-    py::list cpu_targets;
-    // Each entry: (name, PyCapsule, api_version)
-    cpu_targets.append(py::make_tuple(
-        "lapack_sormqr_ffi",
-        py::capsule(reinterpret_cast<void*>(lapack_sormqr_ffi),
-                    "xla._CUSTOM_CALL_TARGET"),
-        /*api_version=*/1));
-    cpu_targets.append(py::make_tuple(
-        "lapack_dormqr_ffi",
-        py::capsule(reinterpret_cast<void*>(lapack_dormqr_ffi),
-                    "xla._CUSTOM_CALL_TARGET"),
-        /*api_version=*/1));
-    cpu_targets.append(py::make_tuple(
-        "lapack_cunmqr_ffi",
-        py::capsule(reinterpret_cast<void*>(lapack_cunmqr_ffi),
-                    "xla._CUSTOM_CALL_TARGET"),
-        /*api_version=*/1));
-    cpu_targets.append(py::make_tuple(
-        "lapack_zunmqr_ffi",
-        py::capsule(reinterpret_cast<void*>(lapack_zunmqr_ffi),
-                    "xla._CUSTOM_CALL_TARGET"),
-        /*api_version=*/1));
+    nb::dict out;
+    nb::list cpu_targets;
+    auto make_entry = [&](const char* name, void* sym) {
+      cpu_targets.append(nb::make_tuple(
+          name,
+          nb::capsule(sym, "xla._CUSTOM_CALL_TARGET"),
+          /*api_version=*/1));
+    };
+    make_entry("lapack_sormqr_ffi", reinterpret_cast<void*>(lapack_sormqr_ffi));
+    make_entry("lapack_dormqr_ffi", reinterpret_cast<void*>(lapack_dormqr_ffi));
+    make_entry("lapack_cunmqr_ffi", reinterpret_cast<void*>(lapack_cunmqr_ffi));
+    make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });
