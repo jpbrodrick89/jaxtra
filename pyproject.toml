@@ -1,18 +1,71 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = [
+  "scikit-build-core>=0.9",
+  "pybind11>=3.0",
+  "jax",          # provides XLA FFI headers via jax.ffi.include_dir()
+  "jaxlib",
+]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "jaxtra"
 version = "0.1.0"
-description = "Exposes LAPACK ORMQR (orthogonal QR multiply) routines with a JAX-compatible API"
-requires-python = ">=3.9"
-dependencies = ["numpy", "scipy"]
+description = "LAPACK ORMQR as a native JAX extension (XLA FFI) — apply Q without forming it"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "jax>=0.4.30",
+  "jaxlib>=0.4.30",
+  "numpy",
+]
 
 [project.optional-dependencies]
-jax = ["jax"]
-test = ["pytest", "numpy", "scipy"]
+test = ["pytest"]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["jaxtra*"]
+# ---------------------------------------------------------------------------
+# scikit-build-core options
+# ---------------------------------------------------------------------------
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages = ["jaxtra"]
+# In editable mode, write the compiled .so into the source tree so that the
+# editable finder can locate it without a separate install step.
+editable.mode = "inplace"
+
+[tool.scikit-build.cmake.define]
+# Allow overriding LAPACK location at build time, e.g. for cibuildwheel.
+# CMAKE_PREFIX_PATH = ""
+
+# ---------------------------------------------------------------------------
+# cibuildwheel — build manylinux + macOS wheels in CI
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+# Only build CPython, skip PyPy and 32-bit.
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip  = "*-win32 *-manylinux_i686 *-musllinux*"
+
+# Install build dependencies inside each wheel environment.
+before-build = "pip install jax jaxlib pybind11 scikit-build-core"
+
+# On Linux, repair with auditwheel to bundle the LAPACK .so.
+[tool.cibuildwheel.linux]
+before-all  = "yum install -y lapack-devel openblas-devel || apt-get install -y liblapack-dev libopenblas-dev"
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+manylinux-x86_64-image = "manylinux_2_28"
+
+# On macOS, use Accelerate (ships with Xcode, no extra install needed).
+[tool.cibuildwheel.macos]
+environment = { LDFLAGS = "-framework Accelerate" }
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} {wheel}"
+
+# Windows: link against OpenBLAS from conda-forge or vcpkg.
+[tool.cibuildwheel.windows]
+before-all = "pip install delvewheel"
+repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel}"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]

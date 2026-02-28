@@ -4,3 +4,17 @@ jaxtra.egg-info/
 .pytest_cache/
 dist/
 build/
+
+# scikit-build-core / CMake in-tree build artefacts
+CMakeCache.txt
+CMakeFiles/
+CMakeInit.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+.skbuild-info.json
+.cmake/
+
+# Compiled extension produced by inplace editable install
+_jaxtra*.so

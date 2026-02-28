@@ -1,207 +1,264 @@
-"""Direct LAPACK ORMQR wrappers via SciPy.
-
-Provides ``ormqr_lapack``, which calls one of the four LAPACK routines:
-  sormqr  (float32, real)
-  dormqr  (float64, real)
-  cunmqr  (complex64)
-  zunmqr  (complex128)
-
-The function handles workspace allocation, Fortran-order requirements, and
-batch dimensions.
 """
+jaxtra._core — JAX primitive for LAPACK ORMQR via the XLA FFI.
 
+Registers the four dtype variants (f32/f64/c64/c128) with JAX's FFI and
+exposes ``ormqr``, a proper JAX primitive that:
+
+* participates in ``jax.jit`` and ``jax.vmap``
+* applies Q from a compact QR factorisation (Householder vectors + taus)
+  to a matrix C **without ever forming Q**
+* works on CPU today; GPU support requires a cuSOLVER kernel (future work)
+
+For non-JAX (pure numpy) use, see ``jaxtra._numpy_lapack.ormqr_lapack``.
+"""
 from __future__ import annotations
 
+import os
+from functools import partial
+
 import numpy as np
-import scipy.linalg.lapack as _sl
+import jax
+import jax.numpy as jnp
+from jax._src import core     # jax.core.Primitive was removed in 0.9
+from jax._src import dispatch
+from jax._src.interpreters import mlir, batching
+import jax.ffi as ffi
 
 # ---------------------------------------------------------------------------
-# LAPACK routine dispatch
+# 1. Register FFI targets from the C extension
 # ---------------------------------------------------------------------------
 
-_ORMQR_FNS: dict[np.dtype, object] = {
-    np.dtype("float32"):    _sl.sormqr,
-    np.dtype("float64"):    _sl.dormqr,
-    np.dtype("complex64"):  _sl.cunmqr,
-    np.dtype("complex128"): _sl.zunmqr,
+def _load_extension():
+    """Load _jaxtra.so by file path, bypassing the package import system.
+
+    This avoids the circular import that would occur if we used
+    ``from jaxtra import _jaxtra`` while ``jaxtra/__init__.py`` is still
+    being initialised.
+
+    Search order:
+      1. ``jaxtra/`` (installed wheel / cmake --install)
+      2. Project root one level up (scikit-build-core inplace / editable mode)
+    """
+    import glob
+    import importlib.util
+    import sys
+
+    mod_name = "jaxtra._jaxtra"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+
+    here = os.path.dirname(__file__)
+    search_dirs = [here, os.path.dirname(here)]
+    candidates = []
+    for d in search_dirs:
+        candidates.extend(glob.glob(os.path.join(d, "_jaxtra*.so")))
+
+    if not candidates:
+        raise ImportError(
+            "jaxtra C extension (_jaxtra.so) not found. "
+            "Build it with:  pip install -e . --no-build-isolation"
+        )
+    spec = importlib.util.spec_from_file_location(mod_name, candidates[0])
+    ext = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = ext
+    spec.loader.exec_module(ext)
+    return ext
+
+
+def _register_targets() -> None:
+    """Register XLA FFI targets for all dtype variants."""
+    _jaxtra = _load_extension()
+    for platform, targets in _jaxtra.registrations().items():
+        for name, capsule, api_version in targets:
+            ffi.register_ffi_target(
+                name, capsule, platform=platform, api_version=api_version
+            )
+
+
+_register_targets()
+
+# ---------------------------------------------------------------------------
+# 2. Dtype helpers
+# ---------------------------------------------------------------------------
+
+_DTYPE_TO_TARGET: dict[np.dtype, str] = {
+    np.dtype("float32"):    "jaxtra_ormqr_f32",
+    np.dtype("float64"):    "jaxtra_ormqr_f64",
+    np.dtype("complex64"):  "jaxtra_ormqr_c64",
+    np.dtype("complex128"): "jaxtra_ormqr_c128",
 }
 
-_SUPPORTED_DTYPES = tuple(_ORMQR_FNS.keys())
+_SUPPORTED = frozenset(_DTYPE_TO_TARGET)
 
 
-def _get_fn(dtype: np.dtype):
-    fn = _ORMQR_FNS.get(np.dtype(dtype))
-    if fn is None:
-        raise TypeError(
-            f"ormqr_lapack does not support dtype {dtype!r}. "
-            f"Supported dtypes: {list(_ORMQR_FNS.keys())}"
-        )
-    return fn
-
-
-# ---------------------------------------------------------------------------
-# Single-matrix kernel (no batch dimension)
-# ---------------------------------------------------------------------------
-
-def _ormqr_single(
-    a: np.ndarray,   # (m, k) Householder reflectors
-    tau: np.ndarray, # (k,)   Householder scalars
-    c: np.ndarray,   # (m, n) or (n, m) depending on side
-    side: bytes,
-    trans: bytes,
-) -> np.ndarray:
-    """Call LAPACK ormqr/unmqr for a single (non-batched) problem."""
-    fn = _get_fn(a.dtype)
-
-    # LAPACK expects Fortran-contiguous ('F') arrays.
-    a_f = np.asfortranarray(a)
-    c_out = np.asfortranarray(c.copy())
-
-    # Workspace query (lwork = -1)
-    cq, work_q, info = fn(side, trans, a_f, tau, c_out, -1)
-    if info != 0:
-        raise RuntimeError(f"LAPACK ormqr workspace query failed (info={info})")
-    lwork = max(1, int(np.real(work_q[0])))
-
-    # Actual computation
-    cq, _, info = fn(side, trans, a_f, tau, c_out, lwork, overwrite_c=1)
-    if info != 0:
-        raise RuntimeError(f"LAPACK ormqr failed (info={info})")
-
-    return cq
+def _promote(dtype: np.dtype) -> np.dtype:
+    """Map any dtype to the nearest supported one."""
+    dtype = np.dtype(dtype)
+    if dtype in _SUPPORTED:
+        return dtype
+    if np.issubdtype(dtype, np.complexfloating):
+        return np.dtype("complex64") if dtype.itemsize <= 8 else np.dtype("complex128")
+    return np.dtype("float32") if dtype.itemsize <= 4 else np.dtype("float64")
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# 3. JAX primitive
 # ---------------------------------------------------------------------------
 
-def ormqr_lapack(
-    a: np.ndarray,
-    tau: np.ndarray,
-    c: np.ndarray,
+ormqr_p = core.Primitive("jaxtra_ormqr")
+ormqr_p.multiple_results = False
+# Eager (non-JIT) execution: dispatch through XLA just like JAX's own linalg ops.
+ormqr_p.def_impl(partial(dispatch.apply_primitive, ormqr_p))
+
+
+# Abstract eval — shape/dtype inference.
+def _ormqr_abstract(a, tau, c, *, left: bool, transpose: bool):
+    out_dtype = _promote(np.dtype(a.dtype))
+    return core.ShapedArray(c.shape, out_dtype)
+
+
+ormqr_p.def_abstract_eval(_ormqr_abstract)
+
+
+# MLIR (XLA) lowering — dispatches to the registered FFI target.
+#
+# We specify column-major (Fortran) layouts for the matrix inputs/output so
+# XLA reorders the data before calling the C++ kernel.  The kernel then sees
+# data in the order LAPACK expects, and the output is also column-major so
+# XLA correctly interprets it back as a row-major JAX array.
+#
+# Layout tuples are minor-to-major (as XLA expects):
+#   row-major 2-D (default):  (1, 0)  — last dim varies fastest
+#   col-major 2-D (Fortran):  (0, 1)  — first dim varies fastest
+#   col-major batched (n-D): (n-3, n-2, n-4, ..., 0)  → inner (0,1) col-major
+def _col_major_layout(ndim: int) -> tuple[int, ...]:
+    """Column-major (Fortran) layout in XLA minor-to-major convention."""
+    if ndim < 2:
+        return tuple(range(ndim - 1, -1, -1))  # 1-D: (0,)
+    # For matrices: (ndim-2, ndim-1) for inner dims, then batch dims descending.
+    return (ndim - 2, ndim - 1) + tuple(range(ndim - 3, -1, -1))
+
+
+def _ormqr_lowering(ctx, a, tau, c, *, left: bool, transpose: bool):
+    (a_aval, tau_aval, c_aval) = ctx.avals_in
+    target = _DTYPE_TO_TARGET[np.dtype(a_aval.dtype)]
+
+    op_layouts = [
+        _col_major_layout(len(a_aval.shape)),    # a: column-major
+        tuple(range(len(tau_aval.shape) - 1, -1, -1)),  # tau: 1-D (0,)
+        _col_major_layout(len(c_aval.shape)),    # c: column-major
+    ]
+    res_layouts = [
+        _col_major_layout(len(c_aval.shape)),    # c_out: column-major
+    ]
+
+    return ffi.ffi_lowering(
+        target,
+        operand_layouts=op_layouts,
+        result_layouts=res_layouts,
+    )(
+        ctx, a, tau, c,
+        left=left,
+        transpose=transpose,
+    )
+
+
+mlir.register_lowering(ormqr_p, _ormqr_lowering)
+
+
+# vmap / batching rule.
+def _ormqr_batching(args, dims, *, left, transpose):
+    a, tau, c = args
+    da, dtau, dc = dims
+
+    if da is not batching.not_mapped:
+        a = batching.moveaxis(a, da, 0)
+    if dtau is not batching.not_mapped:
+        tau = batching.moveaxis(tau, dtau, 0)
+    if dc is not batching.not_mapped:
+        c = batching.moveaxis(c, dc, 0)
+
+    # Broadcast any un-batched inputs to the batch size.
+    batch_size = next(
+        x.shape[0] for x, d in zip((a, tau, c), (da, dtau, dc))
+        if d is not batching.not_mapped
+    )
+    if da is batching.not_mapped:
+        a = jnp.broadcast_to(a, (batch_size,) + a.shape)
+    if dtau is batching.not_mapped:
+        tau = jnp.broadcast_to(tau, (batch_size,) + tau.shape)
+    if dc is batching.not_mapped:
+        c = jnp.broadcast_to(c, (batch_size,) + c.shape)
+
+    result = ormqr_p.bind(a, tau, c, left=left, transpose=transpose)
+    return result, 0
+
+
+batching.primitive_batchers[ormqr_p] = _ormqr_batching
+
+
+# ---------------------------------------------------------------------------
+# 4. Public function
+# ---------------------------------------------------------------------------
+
+def ormqr(
+    a: jax.Array,
+    taus: jax.Array,
+    c: jax.Array,
     *,
     left: bool = True,
     transpose: bool = False,
-) -> np.ndarray:
-    """Multiply a matrix by Q from a QR factorization using LAPACK.
+) -> jax.Array:
+    """Apply Q from a compact QR factorisation to matrix ``c``.
 
-    Computes one of the four operations:
-
-    =========  =========  =============
-    ``left``   ``trans``  Operation
-    =========  =========  =============
-    ``True``   ``False``  ``Q   @ C``
-    ``True``   ``True``   ``Qᴴ  @ C``
-    ``False``  ``False``  ``C   @ Q``
-    ``False``  ``True``   ``C   @ Qᴴ``
-    =========  =========  =============
-
-    For real arrays ``Qᴴ = Qᵀ``; for complex arrays the conjugate
-    transpose is used.
+    Uses the Householder representation directly — Q is **never materialised**.
+    This is faster and more memory-efficient than forming Q explicitly.
 
     Parameters
     ----------
     a:
-        Householder reflectors as returned by :func:`numpy.linalg.qr` (raw
-        mode) or SciPy's ``geqrf``/``geqp3``.  Shape ``[..., m, k]``.
-    tau:
-        Householder scalar factors, shape ``[..., k]``.
+        Compact Householder matrix as returned by
+        ``jax._src.lax.linalg.geqrf`` — shape ``(..., m, k)`` where ``k``
+        is the number of reflectors (``k = min(m, n)`` for an ``m × n``
+        input matrix).
+    taus:
+        Householder scalar factors — shape ``(..., k)``.
     c:
-        Matrix to multiply.  Shape ``[..., m, n]`` when ``left=True`` or
-        ``[..., n, m]`` when ``left=False``.
+        Matrix to be multiplied — shape ``(..., m, n)`` for *left*
+        multiplication or ``(..., n, m)`` for *right* multiplication.
     left:
-        If ``True`` multiply on the left (``Q @ C``); otherwise on the right
-        (``C @ Q``).
+        ``True`` (default): compute ``Q @ c`` or ``Qᴴ @ c``.
+        ``False``: compute ``c @ Q`` or ``c @ Qᴴ``.
     transpose:
-        If ``True`` use ``Qᵀ`` / ``Qᴴ`` instead of ``Q``.
+        ``False`` (default): use ``Q``.
+        ``True``: use the conjugate transpose ``Qᴴ`` (= ``Qᵀ`` for real).
 
     Returns
     -------
-    numpy.ndarray
-        Result array with the same shape as *c*.
+    jax.Array
+        Same shape and dtype as ``c``.
 
-    Raises
-    ------
-    TypeError
-        If *dtype* is not one of float32, float64, complex64, complex128.
-    ValueError
-        If shapes are incompatible.
-    RuntimeError
-        If the underlying LAPACK call returns a non-zero info code.
+    Notes
+    -----
+    This is a JIT-compiled primitive.  It works inside ``jax.jit``,
+    ``jax.vmap``, and automatic differentiation is planned for a future
+    release.
+
+    Examples
+    --------
+    Solve a least-squares problem efficiently:
+
+    >>> import jax.numpy as jnp
+    >>> from jax._src.lax.linalg import geqrf
+    >>> from jaxtra import ormqr
+    >>>
+    >>> A = jnp.ones((6, 4), dtype=jnp.float64)
+    >>> b = jnp.ones(6, dtype=jnp.float64)
+    >>> H, taus = geqrf(A)               # compact QR — taus as JAX arrays
+    >>> Qtb = ormqr(H, taus, b[:, None], left=True, transpose=True)  # Qᵀ b
     """
-    a = np.asarray(a)
-    tau = np.asarray(tau)
-    c = np.asarray(c)
-
-    # Promote integer inputs to float64.
-    if not np.issubdtype(a.dtype, np.floating) and not np.issubdtype(
-        a.dtype, np.complexfloating
-    ):
-        a = a.astype(np.float64)
-        tau = tau.astype(np.float64)
-        c = c.astype(np.float64)
-
-    # Ensure consistent dtype across inputs.
-    dtype = np.result_type(a, tau, c)
-    if dtype not in _ORMQR_FNS:
-        # Upcast to nearest supported type.
-        if np.issubdtype(dtype, np.complexfloating):
-            dtype = np.complex128
-        else:
-            dtype = np.float64
-    a = a.astype(dtype)
-    tau = tau.astype(dtype)
-    c = c.astype(dtype)
-
-    # LAPACK side / trans characters.
-    side: bytes = b"L" if left else b"R"
-    is_complex = np.issubdtype(dtype, np.complexfloating)
-    if transpose:
-        trans: bytes = b"C" if is_complex else b"T"
-    else:
-        trans = b"N"
-
-    # -----------------------------------------------------------------------
-    # Shape validation
-    # -----------------------------------------------------------------------
-    if a.ndim < 2:
-        raise ValueError(f"'a' must have at least 2 dimensions, got shape {a.shape}")
-    if tau.ndim < 1:
-        raise ValueError(f"'tau' must have at least 1 dimension, got shape {tau.shape}")
-    if c.ndim < 2:
-        raise ValueError(f"'c' must have at least 2 dimensions, got shape {c.shape}")
-
-    m = a.shape[-2]  # rows of the Householder matrix
-    k = tau.shape[-1]
-
-    if left and c.shape[-2] != m:
-        raise ValueError(
-            f"ormqr with left=True requires c.shape[-2] == a.shape[-2], "
-            f"but got a.shape={a.shape} and c.shape={c.shape}."
-        )
-    if not left and c.shape[-1] != m:
-        raise ValueError(
-            f"ormqr with left=False requires c.shape[-1] == a.shape[-2], "
-            f"but got a.shape={a.shape} and c.shape={c.shape}."
-        )
-
-    # -----------------------------------------------------------------------
-    # Batch dispatch
-    # -----------------------------------------------------------------------
-    batch_shape = np.broadcast_shapes(a.shape[:-2], tau.shape[:-1], c.shape[:-2])
-
-    if len(batch_shape) == 0:
-        # Non-batched: a is (m, k), tau is (k,), c is (c_rows, c_cols).
-        return _ormqr_single(a, tau, c, side, trans)
-
-    # Broadcast to common batch shape and iterate.
-    a_b = np.broadcast_to(a, batch_shape + a.shape[-2:])
-    tau_b = np.broadcast_to(tau, batch_shape + tau.shape[-1:])
-    c_b = np.broadcast_to(c, batch_shape + c.shape[-2:])
-
-    out = np.empty(batch_shape + c.shape[-2:], dtype=dtype)
-    for idx in np.ndindex(batch_shape):
-        out[idx] = _ormqr_single(
-            a_b[idx], tau_b[idx], c_b[idx], side, trans
-        )
-    return out
+    dtype = _promote(np.dtype(jnp.result_type(a)))
+    a    = jnp.asarray(a,    dtype=dtype)
+    taus = jnp.asarray(taus, dtype=dtype)
+    c    = jnp.asarray(c,    dtype=dtype)
+    return ormqr_p.bind(a, taus, c, left=left, transpose=transpose)

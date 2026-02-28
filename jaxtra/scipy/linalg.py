@@ -11,7 +11,7 @@ from typing import Literal, overload
 
 import numpy as np
 
-from jaxtra._core import ormqr_lapack
+from jaxtra._numpy_lapack import ormqr_lapack
 
 import scipy.linalg.lapack as _sl
 
