@@ -1,4 +1,4 @@
-// pybind11 module for jaxtra: registers XLA FFI LAPACK ORMQR kernels.
+// nanobind module for jaxtra: registers XLA FFI LAPACK ORMQR kernels.
 //
 // Uses nanobind (same as jaxlib) so that initialize() can extract raw LAPACK
 // function pointers from scipy's Cython capsules via nb::capsule::data(),
@@ -22,7 +22,7 @@ using namespace jaxtra;
 // ---------------------------------------------------------------------------
 template <typename Kernel>
 void AssignKernelFn(void* fn) {
-  Kernel::fn = reinterpret_cast<typename Kernel::FnType>(fn);
+  Kernel::fn = reinterpret_cast<typename Kernel::FnType*>(fn);
 }
 
 // ---------------------------------------------------------------------------

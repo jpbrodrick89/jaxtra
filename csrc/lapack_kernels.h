@@ -3,12 +3,11 @@
 // Defines OrthogonalQrMultiply<dtype>, mirroring the struct of the same name
 // in JAX PR #35104 (jaxlib/cpu/lapack_kernels.h).
 //
-// Key difference from PR: `fn` is set at Python import time via
-// set_lapack_fn_ptrs() (called from jaxtra/_core.py using ctypes to extract
-// raw pointers from scipy.linalg.cython_lapack.__pyx_capi__) rather than
-// being resolved via jaxlib's internal LAPACK loader.  This avoids linking
-// against OpenBLAS at build time and lets jaxtra work with the user's existing
-// scipy installation.
+// Key difference from PR: `fn` is set at Python import time by
+// _jaxtra.initialize() (jaxtra_module.cc), which extracts the raw pointer from
+// scipy.linalg.cython_lapack.__pyx_capi__ via nanobind capsule.  This avoids
+// linking against OpenBLAS at build time and lets jaxtra work with the user's
+// existing scipy installation.
 #pragma once
 
 #include <complex>
@@ -26,7 +25,7 @@ namespace ffi = ::xla::ffi;
 // Mirrors OrthogonalQrMultiply in JAX PR #35104.
 //
 // `fn` is the raw LAPACK function pointer (sormqr_/dormqr_/cunmqr_/zunmqr_),
-// set at Python import time by jaxtra._core._register_targets() via ctypes.
+// set at Python import time by _jaxtra.initialize().
 template <ffi::DataType dtype>
 struct OrthogonalQrMultiply {
   using ValueType = ffi::NativeType<dtype>;
@@ -34,14 +33,14 @@ struct OrthogonalQrMultiply {
   // Fortran LAPACK calling convention for all four variants.
   // For real dtypes: ValueType = float / double.
   // For complex dtypes: ValueType = std::complex<float/double>.
-  using FnType = void (*)(char* /*side*/, char* /*trans*/, int* /*m*/,
-                          int* /*n*/, int* /*k*/, ValueType* /*a*/,
-                          int* /*lda*/, ValueType* /*tau*/, ValueType* /*c*/,
-                          int* /*ldc*/, ValueType* /*work*/, int* /*lwork*/,
-                          int* /*info*/);
+  using FnType = void(char* /*side*/, char* /*trans*/, int* /*m*/,
+                      int* /*n*/, int* /*k*/, ValueType* /*a*/,
+                      int* /*lda*/, ValueType* /*tau*/, ValueType* /*c*/,
+                      int* /*ldc*/, ValueType* /*work*/, int* /*lwork*/,
+                      int* /*info*/);
 
-  // Function pointer; nullptr until set_lapack_fn_ptrs() is called.
-  inline static FnType fn = nullptr;
+  // Function pointer; nullptr until initialize() is called.
+  inline static FnType* fn = nullptr;
 
   // Apply Q to c_out in place (c_out is a copy of c on entry).
   static ffi::Error Kernel(ffi::Buffer<dtype> a, ffi::Buffer<dtype> tau,
