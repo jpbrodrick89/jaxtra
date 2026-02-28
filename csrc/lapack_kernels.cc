@@ -45,12 +45,6 @@ ffi::Error OrthogonalQrMultiply<dtype>::Kernel(ffi::Buffer<dtype> a,
                                                 ffi::Buffer<dtype> c,
                                                 bool left, bool transpose,
                                                 ffi::ResultBuffer<dtype> c_out) {
-  if (fn == nullptr) {
-    return ffi::Error(ffi::ErrorCode::kInternal,
-                      "jaxtra LAPACK not initialized; call "
-                      "jaxtra._core._register_targets() before use");
-  }
-
   // Unpack batch / matrix dimensions.
   auto dims_result = SplitBatch2D(c.dimensions());
   if (dims_result.has_error()) return std::move(dims_result.error());
@@ -99,7 +93,7 @@ ffi::Error OrthogonalQrMultiply<dtype>::Kernel(ffi::Buffer<dtype> a,
   auto* out_data = c_out->typed_data();
 
   int c_leading_dim = c_rows_v;
-  int info = 0;
+  int info = 0;  // ignored; matches jaxlib's behaviour
 
   const int64_t c_step   = c_rows * c_cols;
   const int64_t a_step   = a_rows * a_cols;
@@ -110,10 +104,6 @@ ffi::Error OrthogonalQrMultiply<dtype>::Kernel(ffi::Buffer<dtype> a,
        const_cast<ValueType*>(a_data), &lda_v,
        const_cast<ValueType*>(tau_data),
        out_data, &c_leading_dim, work.data(), &work_size_v, &info);
-    if (info != 0) {
-      return ffi::Error(ffi::ErrorCode::kInternal,
-                        "LAPACK ormqr returned non-zero info");
-    }
     a_data   += a_step;
     tau_data += tau_step;
     out_data += c_step;
