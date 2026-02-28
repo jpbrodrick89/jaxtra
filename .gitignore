@@ -18,3 +18,6 @@ build.ninja
 
 # Compiled extension produced by inplace editable install
 _jaxtra*.so
+
+# nanobind static library produced by inplace editable install
+libnanobind-static.a
