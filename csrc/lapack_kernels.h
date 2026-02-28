@@ -1,5 +1,14 @@
-// LAPACK ORMQR kernel declarations for jaxtra.
-// Implements dormqr/sormqr/cunmqr/zunmqr via the XLA FFI typed API.
+// csrc/lapack_kernels.h — LAPACK ORMQR kernel declarations.
+//
+// Defines OrthogonalQrMultiply<dtype>, mirroring the struct of the same name
+// in JAX PR #35104 (jaxlib/cpu/lapack_kernels.h).
+//
+// Key difference from PR: `fn` is set at Python import time via
+// set_lapack_fn_ptrs() (called from jaxtra/_core.py using ctypes to extract
+// raw pointers from scipy.linalg.cython_lapack.__pyx_capi__) rather than
+// being resolved via jaxlib's internal LAPACK loader.  This avoids linking
+// against OpenBLAS at build time and lets jaxtra work with the user's existing
+// scipy installation.
 #pragma once
 
 #include <complex>
@@ -9,63 +18,45 @@
 
 namespace jaxtra {
 
-namespace ffi = xla::ffi;
-
-// Fortran LAPACK declarations (underscore suffix, LP64 ints).
-extern "C" {
-void sormqr_(char* side, char* trans, int* m, int* n, int* k, float* a,
-             int* lda, float* tau, float* c, int* ldc, float* work,
-             int* lwork, int* info);
-void dormqr_(char* side, char* trans, int* m, int* n, int* k, double* a,
-             int* lda, double* tau, double* c, int* ldc, double* work,
-             int* lwork, int* info);
-void cunmqr_(char* side, char* trans, int* m, int* n, int* k,
-             std::complex<float>* a, int* lda, std::complex<float>* tau,
-             std::complex<float>* c, int* ldc, std::complex<float>* work,
-             int* lwork, int* info);
-void zunmqr_(char* side, char* trans, int* m, int* n, int* k,
-             std::complex<double>* a, int* lda, std::complex<double>* tau,
-             std::complex<double>* c, int* ldc, std::complex<double>* work,
-             int* lwork, int* info);
-}  // extern "C"
+namespace ffi = ::xla::ffi;
 
 // ---------------------------------------------------------------------------
-// XLA FFI handlers (one per dtype).
-// The kernel signature seen from JAX:
-//   ormqr(a: T[..., m, k], tau: T[..., k], c: T[..., p, q], *,
-//         left: bool, transpose: bool) -> T[..., p, q]
-//
-// • left=True  → apply Q on the left:  result = Q  @ c  (requires m == p)
-//               apply Q.H on the left: result = Q.H @ c  when transpose=True
-// • left=False → apply Q on the right: result = c  @ Q  (requires m == q)
-//               apply Q.H on the right:result = c  @ Q.H when transpose=True
-//
-// The Householder vectors live in the lower-trapezoidal part of `a` (output
-// of geqrf).  Taus are the k reflector scalars.
+// OrthogonalQrMultiply<dtype>
 // ---------------------------------------------------------------------------
+// Mirrors OrthogonalQrMultiply in JAX PR #35104.
+//
+// `fn` is the raw LAPACK function pointer (sormqr_/dormqr_/cunmqr_/zunmqr_),
+// set at Python import time by jaxtra._core._register_targets() via ctypes.
+template <ffi::DataType dtype>
+struct OrthogonalQrMultiply {
+  using ValueType = ffi::NativeType<dtype>;
 
-ffi::Error OrmqrF32(ffi::Buffer<ffi::DataType::F32> a,
-                    ffi::Buffer<ffi::DataType::F32> tau,
-                    ffi::Buffer<ffi::DataType::F32> c,
-                    ffi::ResultBuffer<ffi::DataType::F32> c_out,
-                    bool left, bool transpose);
+  // Fortran LAPACK calling convention for all four variants.
+  // For real dtypes: ValueType = float / double.
+  // For complex dtypes: ValueType = std::complex<float/double>.
+  using FnType = void (*)(char* /*side*/, char* /*trans*/, int* /*m*/,
+                          int* /*n*/, int* /*k*/, ValueType* /*a*/,
+                          int* /*lda*/, ValueType* /*tau*/, ValueType* /*c*/,
+                          int* /*ldc*/, ValueType* /*work*/, int* /*lwork*/,
+                          int* /*info*/);
 
-ffi::Error OrmqrF64(ffi::Buffer<ffi::DataType::F64> a,
-                    ffi::Buffer<ffi::DataType::F64> tau,
-                    ffi::Buffer<ffi::DataType::F64> c,
-                    ffi::ResultBuffer<ffi::DataType::F64> c_out,
-                    bool left, bool transpose);
+  // Function pointer; nullptr until set_lapack_fn_ptrs() is called.
+  inline static FnType fn = nullptr;
 
-ffi::Error OrmqrC64(ffi::Buffer<ffi::DataType::C64> a,
-                    ffi::Buffer<ffi::DataType::C64> tau,
-                    ffi::Buffer<ffi::DataType::C64> c,
-                    ffi::ResultBuffer<ffi::DataType::C64> c_out,
-                    bool left, bool transpose);
+  // Apply Q to c_out in place (c_out is a copy of c on entry).
+  static ffi::Error Kernel(ffi::Buffer<dtype> a, ffi::Buffer<dtype> tau,
+                            ffi::Buffer<dtype> c, bool left, bool transpose,
+                            ffi::ResultBuffer<dtype> c_out);
 
-ffi::Error OrmqrC128(ffi::Buffer<ffi::DataType::C128> a,
-                     ffi::Buffer<ffi::DataType::C128> tau,
-                     ffi::Buffer<ffi::DataType::C128> c,
-                     ffi::ResultBuffer<ffi::DataType::C128> c_out,
-                     bool left, bool transpose);
+  // LAPACK workspace query.  Returns -1 on failure.
+  static int64_t GetWorkspaceSize(char side, char trans, int m, int n, int k,
+                                  int lda);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct OrthogonalQrMultiply<ffi::DataType::F32>;
+extern template struct OrthogonalQrMultiply<ffi::DataType::F64>;
+extern template struct OrthogonalQrMultiply<ffi::DataType::C64>;
+extern template struct OrthogonalQrMultiply<ffi::DataType::C128>;
 
 }  // namespace jaxtra
