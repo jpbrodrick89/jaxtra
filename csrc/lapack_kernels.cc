@@ -34,12 +34,14 @@ void CopyN(const T* src, T* dst, int64_t n) {
 
 // Core kernel: calls LAPACK ormqr for a single (possibly batched) problem.
 // All matrix buffers arrive in Fortran (column-major) order.
-template <typename T, auto LapackFn>
+// IsComplex is a compile-time constant so the dead branch for trans is
+// eliminated by the compiler, matching the PR's `if constexpr` pattern.
+template <typename T, auto LapackFn, bool IsComplex>
 ffi::Error OrmqrKernel(const T* a_ptr, const T* tau_ptr, const T* c_ptr,
                        T* out_ptr,
                        ffi::Span<const int64_t> a_dims,
                        ffi::Span<const int64_t> c_dims,
-                       bool left, bool transpose, bool is_complex) {
+                       bool left, bool transpose) {
   // Ranks: a is ≥2-D, c is ≥2-D, tau is ≥1-D.
   int na = static_cast<int>(a_dims.size());
   int nc = static_cast<int>(c_dims.size());
@@ -61,7 +63,13 @@ ffi::Error OrmqrKernel(const T* a_ptr, const T* tau_ptr, const T* c_ptr,
 
   char side  = left ? 'L' : 'R';
   // Real routines accept 'N'/'T'; complex routines accept 'N'/'C'.
-  char trans = transpose ? (is_complex ? 'C' : 'T') : 'N';
+  // The branch is resolved at compile time via the IsComplex template parameter.
+  char trans;
+  if constexpr (IsComplex) {
+    trans = transpose ? 'C' : 'N';
+  } else {
+    trans = transpose ? 'T' : 'N';
+  }
 
   // LAPACK integer arguments.
   int lm  = static_cast<int>(c_rows);  // rows of C
@@ -80,6 +88,10 @@ ffi::Error OrmqrKernel(const T* a_ptr, const T* tau_ptr, const T* c_ptr,
            const_cast<T*>(tau_ptr),
            const_cast<T*>(c_ptr),  // dummy C pointer; query doesn't touch it
            &ldc, &work_size, &lwork_query, &info);
+  if (info != 0) {
+    return ffi::Error(ffi::ErrorCode::kInternal,
+                      "LAPACK ormqr workspace query failed");
+  }
   int lwork = static_cast<int>(std::real(work_size));
   if (lwork < 1) lwork = std::max({lm, ln, 1});
   std::vector<T> work(lwork);
@@ -116,11 +128,11 @@ ffi::Error OrmqrF32(ffi::Buffer<ffi::DataType::F32> a,
                     ffi::Buffer<ffi::DataType::F32> c,
                     ffi::ResultBuffer<ffi::DataType::F32> c_out,
                     bool left, bool transpose) {
-  return OrmqrKernel<float, sormqr_>(
+  return OrmqrKernel<float, sormqr_, /*IsComplex=*/false>(
       a.typed_data(), tau.typed_data(), c.typed_data(),
       c_out->typed_data(),
       a.dimensions(), c.dimensions(),
-      left, transpose, /*is_complex=*/false);
+      left, transpose);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +143,11 @@ ffi::Error OrmqrF64(ffi::Buffer<ffi::DataType::F64> a,
                     ffi::Buffer<ffi::DataType::F64> c,
                     ffi::ResultBuffer<ffi::DataType::F64> c_out,
                     bool left, bool transpose) {
-  return OrmqrKernel<double, dormqr_>(
+  return OrmqrKernel<double, dormqr_, /*IsComplex=*/false>(
       a.typed_data(), tau.typed_data(), c.typed_data(),
       c_out->typed_data(),
       a.dimensions(), c.dimensions(),
-      left, transpose, /*is_complex=*/false);
+      left, transpose);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +159,13 @@ ffi::Error OrmqrC64(ffi::Buffer<ffi::DataType::C64> a,
                     ffi::ResultBuffer<ffi::DataType::C64> c_out,
                     bool left, bool transpose) {
   using CF = std::complex<float>;
-  return OrmqrKernel<CF, cunmqr_>(
+  return OrmqrKernel<CF, cunmqr_, /*IsComplex=*/true>(
       reinterpret_cast<const CF*>(a.typed_data()),
       reinterpret_cast<const CF*>(tau.typed_data()),
       reinterpret_cast<const CF*>(c.typed_data()),
       reinterpret_cast<CF*>(c_out->typed_data()),
       a.dimensions(), c.dimensions(),
-      left, transpose, /*is_complex=*/true);
+      left, transpose);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,13 +177,13 @@ ffi::Error OrmqrC128(ffi::Buffer<ffi::DataType::C128> a,
                      ffi::ResultBuffer<ffi::DataType::C128> c_out,
                      bool left, bool transpose) {
   using CD = std::complex<double>;
-  return OrmqrKernel<CD, zunmqr_>(
+  return OrmqrKernel<CD, zunmqr_, /*IsComplex=*/true>(
       reinterpret_cast<const CD*>(a.typed_data()),
       reinterpret_cast<const CD*>(tau.typed_data()),
       reinterpret_cast<const CD*>(c.typed_data()),
       reinterpret_cast<CD*>(c_out->typed_data()),
       a.dimensions(), c.dimensions(),
-      left, transpose, /*is_complex=*/true);
+      left, transpose);
 }
 
 }  // namespace jaxtra

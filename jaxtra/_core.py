@@ -82,10 +82,10 @@ _register_targets()
 # ---------------------------------------------------------------------------
 
 _DTYPE_TO_TARGET: dict[np.dtype, str] = {
-    np.dtype("float32"):    "jaxtra_ormqr_f32",
-    np.dtype("float64"):    "jaxtra_ormqr_f64",
-    np.dtype("complex64"):  "jaxtra_ormqr_c64",
-    np.dtype("complex128"): "jaxtra_ormqr_c128",
+    np.dtype("float32"):    "lapack_sormqr_ffi",
+    np.dtype("float64"):    "lapack_dormqr_ffi",
+    np.dtype("complex64"):  "lapack_cunmqr_ffi",
+    np.dtype("complex128"): "lapack_zunmqr_ffi",
 }
 
 _SUPPORTED = frozenset(_DTYPE_TO_TARGET)

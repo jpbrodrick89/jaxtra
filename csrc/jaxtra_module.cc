@@ -3,6 +3,9 @@
 // Pattern mirrors jaxlib.lapack: expose `registrations()` returning a dict
 // of {platform: [(name, capsule, api_version)]} so the Python layer can call
 // jax.ffi.register_ffi_target for each entry.
+//
+// Handler names match JAX PR #35104 exactly (lapack_sormqr_ffi etc.) so that
+// if the PR is merged, jaxtra users can switch without changing call sites.
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -13,51 +16,30 @@ namespace py = pybind11;
 namespace ffi = xla::ffi;
 
 // ---------------------------------------------------------------------------
-// XLA FFI handler bindings (typed API, api_version=1)
+// Handler macro — mirrors JAX_CPU_DEFINE_ORMQR from the upstream PR.
+// Binds a typed FFI handler for a single dtype, reducing the four-times
+// repetition of the Ffi::Bind() chain to a single macro call.
 // ---------------------------------------------------------------------------
+#define JAXTRA_DEFINE_ORMQR(name, dtype, kernel_fn)     \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                        \
+      name, kernel_fn,                                   \
+      ffi::Ffi::Bind()                                  \
+          .Arg<ffi::Buffer<dtype>>() /* a */            \
+          .Arg<ffi::Buffer<dtype>>() /* tau */          \
+          .Arg<ffi::Buffer<dtype>>() /* c */            \
+          .Ret<ffi::Buffer<dtype>>() /* c_out */        \
+          .Attr<bool>("left")                           \
+          .Attr<bool>("transpose"))
 
-// Bind each dtype variant via XLA_FFI_DEFINE_HANDLER_SYMBOL so that
-// ffi::Ffi::BindTo returns the PyCapsule expected by register_custom_call_target.
-
-XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    kOrmqrF32, jaxtra::OrmqrF32,
-    ffi::Ffi::Bind()
-        .Arg<ffi::Buffer<ffi::DataType::F32>>()   // a
-        .Arg<ffi::Buffer<ffi::DataType::F32>>()   // tau
-        .Arg<ffi::Buffer<ffi::DataType::F32>>()   // c
-        .Ret<ffi::Buffer<ffi::DataType::F32>>()   // c_out
-        .Attr<bool>("left")
-        .Attr<bool>("transpose"));
-
-XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    kOrmqrF64, jaxtra::OrmqrF64,
-    ffi::Ffi::Bind()
-        .Arg<ffi::Buffer<ffi::DataType::F64>>()
-        .Arg<ffi::Buffer<ffi::DataType::F64>>()
-        .Arg<ffi::Buffer<ffi::DataType::F64>>()
-        .Ret<ffi::Buffer<ffi::DataType::F64>>()
-        .Attr<bool>("left")
-        .Attr<bool>("transpose"));
-
-XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    kOrmqrC64, jaxtra::OrmqrC64,
-    ffi::Ffi::Bind()
-        .Arg<ffi::Buffer<ffi::DataType::C64>>()
-        .Arg<ffi::Buffer<ffi::DataType::C64>>()
-        .Arg<ffi::Buffer<ffi::DataType::C64>>()
-        .Ret<ffi::Buffer<ffi::DataType::C64>>()
-        .Attr<bool>("left")
-        .Attr<bool>("transpose"));
-
-XLA_FFI_DEFINE_HANDLER_SYMBOL(
-    kOrmqrC128, jaxtra::OrmqrC128,
-    ffi::Ffi::Bind()
-        .Arg<ffi::Buffer<ffi::DataType::C128>>()
-        .Arg<ffi::Buffer<ffi::DataType::C128>>()
-        .Arg<ffi::Buffer<ffi::DataType::C128>>()
-        .Ret<ffi::Buffer<ffi::DataType::C128>>()
-        .Attr<bool>("left")
-        .Attr<bool>("transpose"));
+// ---------------------------------------------------------------------------
+// XLA FFI handler bindings (typed API, api_version=1).
+// Names match JAX PR #35104 so that downstream code can switch seamlessly
+// once the PR is merged into jaxlib proper.
+// ---------------------------------------------------------------------------
+JAXTRA_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32, jaxtra::OrmqrF32);
+JAXTRA_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64, jaxtra::OrmqrF64);
+JAXTRA_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64, jaxtra::OrmqrC64);
+JAXTRA_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128, jaxtra::OrmqrC128);
 
 // ---------------------------------------------------------------------------
 // Module
@@ -74,20 +56,24 @@ PYBIND11_MODULE(_jaxtra, m) {
     py::list cpu_targets;
     // Each entry: (name, PyCapsule, api_version)
     cpu_targets.append(py::make_tuple(
-        "jaxtra_ormqr_f32",
-        py::capsule(reinterpret_cast<void*>(kOrmqrF32), "xla._CUSTOM_CALL_TARGET"),
+        "lapack_sormqr_ffi",
+        py::capsule(reinterpret_cast<void*>(lapack_sormqr_ffi),
+                    "xla._CUSTOM_CALL_TARGET"),
         /*api_version=*/1));
     cpu_targets.append(py::make_tuple(
-        "jaxtra_ormqr_f64",
-        py::capsule(reinterpret_cast<void*>(kOrmqrF64), "xla._CUSTOM_CALL_TARGET"),
+        "lapack_dormqr_ffi",
+        py::capsule(reinterpret_cast<void*>(lapack_dormqr_ffi),
+                    "xla._CUSTOM_CALL_TARGET"),
         /*api_version=*/1));
     cpu_targets.append(py::make_tuple(
-        "jaxtra_ormqr_c64",
-        py::capsule(reinterpret_cast<void*>(kOrmqrC64), "xla._CUSTOM_CALL_TARGET"),
+        "lapack_cunmqr_ffi",
+        py::capsule(reinterpret_cast<void*>(lapack_cunmqr_ffi),
+                    "xla._CUSTOM_CALL_TARGET"),
         /*api_version=*/1));
     cpu_targets.append(py::make_tuple(
-        "jaxtra_ormqr_c128",
-        py::capsule(reinterpret_cast<void*>(kOrmqrC128), "xla._CUSTOM_CALL_TARGET"),
+        "lapack_zunmqr_ffi",
+        py::capsule(reinterpret_cast<void*>(lapack_zunmqr_ffi),
+                    "xla._CUSTOM_CALL_TARGET"),
         /*api_version=*/1));
     out["cpu"] = cpu_targets;
     return out;
