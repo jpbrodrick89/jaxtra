@@ -1,13 +1,13 @@
-"""jaxtra: LAPACK ORMQR as a native JAX extension (XLA FFI).
+"""jaxtra: native JAX extensions for LAPACK routines and GPU-accelerated linear algebra.
 
-Provides ``ormqr`` — apply Q from a compact QR factorisation to a matrix C
-**without ever forming Q** — as a proper JAX primitive backed by a C++/LAPACK
-kernel registered through JAX's XLA Foreign Function Interface.
+Ships XLA FFI kernels registered at runtime as proper JAX primitives — JIT,
+vmap, and grad compatible — without requiring a jaxlib rebuild.
 
-The key difference from ``jnp.linalg.qr``:
-  • ``jnp.linalg.qr`` materialises the full Q matrix (expensive for tall matrices).
-  • ``jaxtra.ormqr`` takes the Householder vectors and taus directly and applies
-    Q implicitly via LAPACK dormqr / sormqr / cunmqr / zunmqr.
+Currently exposed:
+  • ``ormqr``       — apply Q (or Qᵀ/Qᴴ) from a compact Householder QR to a
+                      matrix **without forming Q**, backed by LAPACK
+                      dormqr/sormqr/cunmqr/zunmqr.
+  • ``ormqr_lapack``— NumPy/SciPy fallback for the same operation (no JAX needed).
 
 Quick start
 -----------

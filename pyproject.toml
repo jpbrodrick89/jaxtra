@@ -10,7 +10,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "jaxtra"
 version = "0.1.0"
-description = "LAPACK ORMQR as a native JAX extension (XLA FFI) — apply Q without forming it"
+description = "Native JAX extensions for LAPACK routines and GPU-accelerated linear algebra via XLA FFI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
