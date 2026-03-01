@@ -33,4 +33,5 @@ pip install "jaxtra[gpu]"     # + NVIDIA cuSOLVER runtime libs
 :maxdepth: 2
 
 api
+benchmarks
 ```
