@@ -22,7 +22,7 @@ for _mod in ("jaxtra._jaxtra", "jaxtra._jaxtra_cuda"):
 # ---------------------------------------------------------------------------
 project = "jaxtra"
 author = "jpbrodrick89"
-copyright = "2025, jpbrodrick89"
+copyright = "2026, jpbrodrick89"
 release = "0.1.0"
 root_doc = "index"
 
