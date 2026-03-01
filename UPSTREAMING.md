@@ -12,10 +12,15 @@ jaxtra is deliberately written to mirror the structure of jaxlib. The kernel cod
 |---|---|---|
 | Build system | CMake + scikit-build-core | Bazel |
 | LAPACK function pointers | Loaded in our `initialize()` via `scipy.linalg.cython_lapack` capsules | Loaded in jaxlib's `GetLapackKernelsFromScipy()` — same mechanism, same source |
-| Utility helpers (`SplitBatch2D` etc.) | Reimplemented in `csrc/lapack_utils.h` (public XLA FFI API only) | Identical helpers already exist in jaxlib's internal headers; just omit our copy |
-| C++ namespace | `namespace jaxtra` | `namespace jax` |
-| Module + handler registration | `csrc/jaxtra_module.cc` | Added to `jaxlib/cpu/cpu_kernels.cc` |
-| FFI target registration | `_core.py` `_load_extension()` block | Done inside jaxlib at import time; omit entirely |
+| CPU utility helpers (`SplitBatch2D` etc.) | Reimplemented in `csrc/lapack_utils.h` (public XLA FFI API only) | Identical helpers already exist in jaxlib's internal headers; just omit our copy |
+| C++ namespace | `namespace jaxtra` (CPU); `namespace jax::JAX_GPU_NAMESPACE` (GPU, matches jaxlib exactly) | `namespace jax` |
+| CPU module + handler registration | `csrc/jaxtra_module.cc` | Added to `jaxlib/cpu/cpu_kernels.cc` |
+| GPU cuSolver wrappers | `csrc/gpu/jaxlib/gpu/solver_interface.{h,cc}` | `jaxlib/gpu/solver_interface.{h,cc}` |
+| GPU FFI handler | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.{h,cc}` | `jaxlib/gpu/solver_kernels_ffi.{h,cc}` |
+| GPU vendor abstraction | `csrc/gpu/jaxlib/gpu/vendor.h` (bundled copy) | `jaxlib/gpu/vendor.h` |
+| GPU module registration | `csrc/jaxtra_cuda_module.cc` | Added to `jaxlib/gpu/solver.cc` + `jaxlib/gpu/gpu_kernels.cc` |
+| GPU helper dependencies | Bundled in `csrc/gpu/jaxlib/` (`ffi_helpers.h`, `handle_pool.h`, etc.) | Internal jaxlib headers already in scope |
+| FFI target registration | `_core.py` `_load_extension()` / `_load_gpu_extension()` blocks | Done inside jaxlib at import time; omit entirely |
 | JAX primitive | `jaxtra/_core.py` | `jax/_src/lax/linalg.py` |
 | scipy-level public API | `jaxtra/scipy/linalg.py` | `jax/_src/scipy/linalg.py` + re-export in `jax/scipy/linalg.py` |
 
@@ -72,19 +77,70 @@ In jaxtra, `csrc/jaxtra_module.cc` does three things: it defines the XLA FFI han
 
 ---
 
-## Step 2 — Bazel BUILD files
+## Step 2 — Port the GPU kernel (if applicable)
 
-For a routine added entirely within existing source files (`lapack_kernels.h`, `lapack_kernels.cc`, `cpu_kernels.cc`), no new `BUILD` entries are required — those files are already listed in the existing `cc_library` targets.
+If the routine has a cuSolver equivalent, port the GPU files from
+`csrc/gpu/jaxlib/gpu/` into the corresponding files in `jaxlib/gpu/`.
 
-If you need to add a new `.cc` file (rare), find the `cc_library` target that compiles `lapack_kernels.cc` in `jaxlib/cpu/BUILD` and add your file alongside it:
+### 2a. `jaxlib/gpu/solver_interface.h` and `solver_interface.cc`
 
-```bash
-grep -n "lapack_kernels.cc" jaxlib/cpu/BUILD
+Copy the `JAX_GPU_SOLVER_<Routine>BufferSize_ARGS` / `JAX_GPU_SOLVER_<Routine>_ARGS`
+blocks from `csrc/gpu/jaxlib/gpu/solver_interface.h` verbatim. Copy the
+`JAX_GPU_DEFINE_<ROUTINE>` macro block and its four instantiations from
+`csrc/gpu/jaxlib/gpu/solver_interface.cc` verbatim.
+
+No include or namespace changes are needed — jaxtra's GPU files already use
+`namespace jax::JAX_GPU_NAMESPACE` and the same include paths as jaxlib.
+
+### 2b. `jaxlib/gpu/vendor.h`
+
+Add the `gpusolverDn<Type><routine>` and `gpusolverDn<Type><routine>_bufferSize`
+defines from `csrc/gpu/jaxlib/gpu/vendor.h` into the CUDA section (~line 200)
+and the HIP section (~line 640) of jaxlib's `vendor.h`.
+
+### 2c. `jaxlib/gpu/solver_kernels_ffi.h` and `solver_kernels_ffi.cc`
+
+Add `XLA_FFI_DECLARE_HANDLER_SYMBOL(<Routine>Ffi)` to the header.
+
+Copy the `<Routine>Impl`, `<Routine>Dispatch`, and `XLA_FFI_DEFINE_HANDLER_SYMBOL`
+blocks from `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc` verbatim into jaxlib's
+`solver_kernels_ffi.cc`. The only includes needed (`jaxlib/ffi_helpers.h`,
+`jaxlib/gpu/solver_handle_pool.h`, etc.) are already present in the file.
+
+### 2d. `jaxlib/gpu/solver.cc`
+
+Add one line to `Registrations()`:
+
+```cpp
+dict[JAX_GPU_PREFIX "solver_<routine>_ffi"] = EncapsulateFfiHandler(<Routine>Ffi);
+```
+
+### 2e. `jaxlib/gpu/gpu_kernels.cc`
+
+Add one `XLA_FFI_REGISTER_HANDLER` call (for static registration when the GPU
+module is loaded without Python):
+
+```cpp
+XLA_FFI_REGISTER_HANDLER(XLA_FFI_GetApi(), "cusolver_<routine>_ffi", "CUDA",
+                         <Routine>Ffi);
 ```
 
 ---
 
-## Step 3 — Build jaxlib from source
+## Step 3 — Bazel BUILD files
+
+For a routine added entirely within existing source files, no new `BUILD`
+entries are required. If you need to add a new `.cc` file (rare), find the
+`cc_library` target that compiles the relevant file and add yours alongside it:
+
+```bash
+grep -n "lapack_kernels.cc" jaxlib/cpu/BUILD
+grep -n "solver_kernels_ffi.cc" jaxlib/gpu/BUILD
+```
+
+---
+
+## Step 4 — Build jaxlib from source
 
 ```bash
 python build/build.py build --wheels=jaxlib
@@ -109,7 +165,7 @@ If the build fails on a C++ error, the Bazel output will include the file and li
 
 ---
 
-## Step 4 — Port the Python primitive
+## Step 5 — Port the Python primitive
 
 ### 4a. `jax/_src/lax/linalg.py`
 
@@ -138,7 +194,7 @@ Copy the wrapper from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. 
 
 ---
 
-## Step 5 — Tests
+## Step 6 — Tests
 
 Copy the relevant test file(s) from `tests/` into `tests/` inside the JAX repo. Update the import lines:
 
@@ -166,12 +222,32 @@ The parametrised dtype/shape/JIT/vmap coverage in the jaxtra test suite is suffi
 
 ### File-by-file map
 
+**CPU path**
+
 | jaxtra | JAX / jaxlib | Changes required |
 |---|---|---|
 | `csrc/lapack_kernels.h` | `jaxlib/cpu/lapack_kernels.h` | Namespace only |
 | `csrc/lapack_kernels.cc` | `jaxlib/cpu/lapack_kernels.cc` | Namespace; drop `lapack_utils.h` include |
 | `csrc/jaxtra_module.cc` (handler macros) | `jaxlib/cpu/cpu_kernels.cc` | Rename macro; fold `initialize()` into `GetLapackKernelsFromScipy()`; fold `registrations()` into existing registration block |
-| `jaxtra/_core.py` (primitive + lowerings) | `jax/_src/lax/linalg.py` | Drop `_load_extension` block; add names to `__all__` |
+
+**GPU path**
+
+| jaxtra | JAX / jaxlib | Changes required |
+|---|---|---|
+| `csrc/gpu/jaxlib/gpu/solver_interface.h` | `jaxlib/gpu/solver_interface.h` | None — copy the `OrmqrBufferSize` / `Ormqr` macro blocks verbatim |
+| `csrc/gpu/jaxlib/gpu/solver_interface.cc` | `jaxlib/gpu/solver_interface.cc` | None — copy the `JAX_GPU_DEFINE_ORMQR` block verbatim |
+| `csrc/gpu/jaxlib/gpu/vendor.h` | `jaxlib/gpu/vendor.h` | Copy the `gpusolverDn?ormqr` / `gpusolverDn?ormqr_bufferSize` defines into both the CUDA and HIP sections |
+| `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.h` | `jaxlib/gpu/solver_kernels_ffi.h` | Add `XLA_FFI_DECLARE_HANDLER_SYMBOL(OrmqrFfi)` |
+| `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc` | `jaxlib/gpu/solver_kernels_ffi.cc` | Copy `OrmqrImpl`, `OrmqrDispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL(OrmqrFfi, …)` verbatim |
+| `csrc/jaxtra_cuda_module.cc` (ormqr entry) | `jaxlib/gpu/solver.cc` | Add `dict[JAX_GPU_PREFIX "solver_ormqr_ffi"] = EncapsulateFfiHandler(OrmqrFfi)` |
+| `csrc/jaxtra_cuda_module.cc` (ormqr entry) | `jaxlib/gpu/gpu_kernels.cc` | Add `XLA_FFI_REGISTER_HANDLER(…, "cusolver_ormqr_ffi", "CUDA", OrmqrFfi)` |
+| `csrc/gpu/jaxlib/` (bundled helpers) | Already in jaxlib's internal headers | Drop entirely — jaxlib already has `ffi_helpers.h`, `handle_pool.h`, etc. |
+
+**Python / tests**
+
+| jaxtra | JAX / jaxlib | Changes required |
+|---|---|---|
+| `jaxtra/_core.py` (primitive + lowerings) | `jax/_src/lax/linalg.py` | Drop `_load_extension` and `_load_gpu_extension` blocks; add names to `__all__` |
 | `jaxtra/scipy/linalg.py` (`qr_multiply`) | `jax/_src/scipy/linalg.py` + `jax/scipy/linalg.py` | Update imports; add to re-export list |
 | `tests/test_ormqr.py` | `tests/lax_scipy_linalg_test.py` (or new file) | Update imports |
 
@@ -213,4 +289,45 @@ make_entry("lapack_sormqr_ffi", reinterpret_cast<void*>(lapack_sormqr_ffi));
 make_entry("lapack_dormqr_ffi", reinterpret_cast<void*>(lapack_dormqr_ffi));
 make_entry("lapack_cunmqr_ffi", reinterpret_cast<void*>(lapack_cunmqr_ffi));
 make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
+```
+
+### Step 2 detail — GPU additions for `ormqr`
+
+**`solver_interface.cc`** — the `JAX_GPU_DEFINE_ORMQR` block (verbatim from `csrc/gpu/jaxlib/gpu/solver_interface.cc`) instantiates `OrmqrBufferSize<T>` and `Ormqr<T>` for `float`, `double`, `gpuComplex`, and `gpuDoubleComplex` by wrapping `gpusolverDnSormqr` / `gpusolverDnDormqr` / `gpusolverDnCunmqr` / `gpusolverDnZunmqr`.
+
+**`vendor.h`** — eight new `#define` lines (CUDA section and HIP section):
+
+```cpp
+// CUDA (~line 201)
+#define gpusolverDnSormqr cusolverDnSormqr
+#define gpusolverDnDormqr cusolverDnDormqr
+#define gpusolverDnCunmqr cusolverDnCunmqr
+#define gpusolverDnZunmqr cusolverDnZunmqr
+#define gpusolverDnSormqr_bufferSize cusolverDnSormqr_bufferSize
+#define gpusolverDnDormqr_bufferSize cusolverDnDormqr_bufferSize
+#define gpusolverDnCunmqr_bufferSize cusolverDnCunmqr_bufferSize
+#define gpusolverDnZunmqr_bufferSize cusolverDnZunmqr_bufferSize
+
+// HIP (~line 638)
+#define gpusolverDnSormqr hipsolverSormqr
+#define gpusolverDnDormqr hipsolverDormqr
+#define gpusolverDnCunmqr hipsolverCunmqr
+#define gpusolverDnZunmqr hipsolverZunmqr
+#define gpusolverDnSormqr_bufferSize hipsolverSormqr_bufferSize
+#define gpusolverDnDormqr_bufferSize hipsolverDormqr_bufferSize
+#define gpusolverDnCunmqr_bufferSize hipsolverCunmqr_bufferSize
+#define gpusolverDnZunmqr_bufferSize hipsolverZunmqr_bufferSize
+```
+
+**`solver_kernels_ffi.cc`** — the full `OrmqrImpl` / `OrmqrDispatch` / `XLA_FFI_DEFINE_HANDLER_SYMBOL(OrmqrFfi, …)` block is verbatim from `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc`.
+
+**`solver.cc`** — one new line in `Registrations()`:
+```cpp
+dict[JAX_GPU_PREFIX "solver_ormqr_ffi"] = EncapsulateFfiHandler(OrmqrFfi);
+```
+
+**`gpu_kernels.cc`** — one new `XLA_FFI_REGISTER_HANDLER` call:
+```cpp
+XLA_FFI_REGISTER_HANDLER(XLA_FFI_GetApi(), "cusolver_ormqr_ffi", "CUDA",
+                         OrmqrFfi);
 ```
