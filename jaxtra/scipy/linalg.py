@@ -20,28 +20,6 @@ from jaxtra._numpy_lapack import ormqr_lapack
 __all__ = ["qr_multiply"]
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _geqrf(a: np.ndarray):
-    """Delegate to JAX's geqrf primitive."""
-    r, tau = _jax_geqrf(jnp.asarray(a))
-    return np.asarray(r), np.asarray(tau)
-
-
-def _geqp3(a: np.ndarray):
-    """Delegate to JAX's geqp3 primitive.
-
-    Returns (r, tau, jpvt) where jpvt uses LAPACK's 1-based convention,
-    matching the behaviour of the previous direct LAPACK call.
-    """
-    n = a.shape[-1]
-    jpvt_init = jnp.zeros(n, dtype=jnp.int32)
-    r, jpvt_out, tau = _jax_geqp3(jnp.asarray(a), jpvt_init)
-    return np.asarray(r), np.asarray(tau), np.asarray(jpvt_out)
-
-
 def _promote_inexact(*arrays: np.ndarray):
     """Promote all arrays to a common floating/complex dtype."""
     dtype = np.result_type(*[a.dtype for a in arrays])
@@ -178,10 +156,12 @@ def qr_multiply(
     if len(batch_shape) == 0:
         # Non-batched path.
         if pivoting:
-            r, tau, jpvt_out = _geqp3(a)
+            r, jpvt_out, tau = _jax_geqp3(jnp.asarray(a), jnp.zeros(n, dtype=jnp.int32))
+            r, tau, jpvt_out = np.asarray(r), np.asarray(tau), np.asarray(jpvt_out)
             p = jpvt_out - 1  # 1-based → 0-based
         else:
-            r, tau = _geqrf(a)
+            r, tau = _jax_geqrf(jnp.asarray(a))
+            r, tau = np.asarray(r), np.asarray(tau)
             p = None
     else:
         # Batched path: loop over batch dimensions.
@@ -190,14 +170,14 @@ def qr_multiply(
         p_list = []
         for i in range(a_flat.shape[0]):
             if pivoting:
-                ri, ti, pi = _geqp3(a_flat[i])
-                r_list.append(ri)
-                tau_list.append(ti)
-                p_list.append(pi - 1)
+                ri, pi, ti = _jax_geqp3(jnp.asarray(a_flat[i]), jnp.zeros(n, dtype=jnp.int32))
+                r_list.append(np.asarray(ri))
+                tau_list.append(np.asarray(ti))
+                p_list.append(np.asarray(pi) - 1)
             else:
-                ri, ti = _geqrf(a_flat[i])
-                r_list.append(ri)
-                tau_list.append(ti)
+                ri, ti = _jax_geqrf(jnp.asarray(a_flat[i]))
+                r_list.append(np.asarray(ri))
+                tau_list.append(np.asarray(ti))
         r = np.stack(r_list).reshape(batch_shape + (m, n))
         tau = np.stack(tau_list).reshape(batch_shape + (min(m, n),))
         p = np.stack(p_list).reshape(batch_shape + (n,)) if pivoting else None
