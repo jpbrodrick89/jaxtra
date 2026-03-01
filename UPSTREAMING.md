@@ -21,27 +21,9 @@ jaxtra is deliberately written to mirror the structure of jaxlib. The kernel cod
 
 ---
 
-## Step 1 — Fork and clone the JAX repository
+## Step 1 — Port the C++ kernel
 
-JAX and jaxlib are in a single repository. Fork [github.com/google/jax](https://github.com/google/jax), then:
-
-```bash
-git clone https://github.com/<your-username>/jax.git
-cd jax
-git checkout -b add-<routine-name>
-```
-
-Install the Python package in editable mode so your local changes to `jax/_src/` are picked up immediately:
-
-```bash
-pip install -e ".[dev]"
-```
-
----
-
-## Step 2 — Port the C++ kernel
-
-### 2a. `jaxlib/cpu/lapack_kernels.h`
+### 1a. `jaxlib/cpu/lapack_kernels.h`
 
 Copy the kernel struct from `csrc/lapack_kernels.h` verbatim, then make two changes:
 
@@ -60,7 +42,7 @@ Everything else — the `FnType` typedef, the `fn` static pointer, `Kernel`, `Ge
 
 ---
 
-### 2b. `jaxlib/cpu/lapack_kernels.cc`
+### 1b. `jaxlib/cpu/lapack_kernels.cc`
 
 Copy the implementation from `csrc/lapack_kernels.cc` verbatim, then:
 
@@ -72,7 +54,7 @@ The `GetWorkspaceSize` and `Kernel` function bodies are identical. The explicit 
 
 ---
 
-### 2c. `jaxlib/cpu/cpu_kernels.cc` — handler definitions and registration
+### 1c. `jaxlib/cpu/cpu_kernels.cc` — handler definitions and registration
 
 In jaxtra, `csrc/jaxtra_module.cc` does three things: it defines the XLA FFI handler symbols, it assigns the LAPACK function pointers in `initialize()`, and it returns the registrations dict. In jaxlib, the same three things are split across the existing `cpu_kernels.cc`:
 
@@ -116,7 +98,7 @@ make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
 
 ---
 
-## Step 3 — Bazel BUILD files
+## Step 2 — Bazel BUILD files
 
 For a routine added entirely within existing source files (`lapack_kernels.h`, `lapack_kernels.cc`, `cpu_kernels.cc`), no new `BUILD` entries are required — those files are already listed in the existing `cc_library` targets.
 
@@ -128,7 +110,7 @@ grep -n "lapack_kernels.cc" jaxlib/cpu/BUILD
 
 ---
 
-## Step 4 — Build jaxlib from source
+## Step 3 — Build jaxlib from source
 
 ```bash
 python build/build.py build --wheels=jaxlib
@@ -153,9 +135,9 @@ If the build fails on a C++ error, the Bazel output will include the file and li
 
 ---
 
-## Step 5 — Port the Python primitive
+## Step 4 — Port the Python primitive
 
-### 5a. `jax/_src/lax/linalg.py`
+### 4a. `jax/_src/lax/linalg.py`
 
 Copy the following from `jaxtra/_core.py` verbatim into `jax/_src/lax/linalg.py`:
 
@@ -176,13 +158,13 @@ Add the new public names to `__all__` at the top of the file.
 
 ---
 
-### 5b. `jax/_src/scipy/linalg.py` (if the routine has a scipy-level wrapper)
+### 4b. `jax/_src/scipy/linalg.py` (if the routine has a scipy-level wrapper)
 
 Copy `qr_multiply` (or the equivalent wrapper) from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. Update imports to point at `jax._src.lax.linalg` rather than `jaxtra._core`. Add the new symbol to the re-export list in `jax/scipy/linalg.py`.
 
 ---
 
-## Step 6 — Tests
+## Step 5 — Tests
 
 Copy `tests/test_ormqr.py` (or the relevant test file) into `tests/` inside the JAX repo. Update the import lines:
 
