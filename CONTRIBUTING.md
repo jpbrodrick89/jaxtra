@@ -152,14 +152,34 @@ add it to the `nanobind_add_module` call.
 
 ## 2. Rebuilding the C extension
 
-After any C++ change, rebuild with:
+After any C++ change, rebuild and reinstall the extension in-place.  The right
+command depends on how you manage your environment.
+
+### pip
 
 ```bash
 pip install -e . --no-build-isolation
 ```
 
-This runs CMake, compiles `_jaxtra.so`, and installs it in-place inside the
-`jaxtra/` package directory so it is found by `_core.py`'s dynamic loader.
+### uv
+
+uv does not forward `--no-build-isolation` the same way, so pass the CMake
+build step explicitly:
+
+```bash
+uv pip install -e . --no-build-isolation
+```
+
+If that still pulls stale build artifacts, wipe the CMake cache first:
+
+```bash
+rm -rf _skbuild build
+uv pip install -e . --no-build-isolation
+```
+
+`scikit-build-core` with `editable.mode = "inplace"` (set in `pyproject.toml`)
+writes `_jaxtra*.so` directly into the `jaxtra/` source tree, so the rebuilt
+extension is picked up immediately without a separate install step.
 
 Verify the extension loads cleanly:
 
