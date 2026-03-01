@@ -1,0 +1,10 @@
+# Documentation build dependencies.
+# Used by ReadTheDocs (installs these without building the C extension).
+# For local builds with the extension compiled, use: pip install -e ".[docs]"
+jax
+jaxlib
+numpy
+sphinx>=7.3
+sphinx-book-theme>=1.1
+myst-parser>=3.0
+sphinx-copybutton>=0.5

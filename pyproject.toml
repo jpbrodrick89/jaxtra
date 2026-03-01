@@ -41,8 +41,15 @@ gpu = [
   "nvidia-cuda-runtime-cu12>=12.0; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 test = ["pytest"]
+docs = [
+  "sphinx>=7.3",
+  "sphinx-book-theme>=1.1",
+  "myst-parser>=3.0",
+  "sphinx-copybutton>=0.5",
+]
 
 [project.urls]
+Documentation = "https://jaxtra.readthedocs.io"
 Repository = "https://github.com/jpbrodrick89/jaxtra"
 Issues     = "https://github.com/jpbrodrick89/jaxtra/issues"
 Changelog  = "https://github.com/jpbrodrick89/jaxtra/blob/main/CHANGELOG.md"
