@@ -12,8 +12,20 @@ name = "jaxtra"
 version = "0.1.0"
 description = "Native JAX extensions for LAPACK routines and GPU-accelerated linear algebra via XLA FFI"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "jpbrodrick89", email = "jonathan.brodrick@simulation.science" },
+]
+keywords = ["jax", "lapack", "linear-algebra", "xla-ffi", "cuda", "cusolver"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Free Threading :: 3 - Stable",
+]
 dependencies = [
   "jax>=0.4.30",
   "jaxlib>=0.4.30",
@@ -29,6 +41,11 @@ gpu = [
   "nvidia-cuda-runtime-cu12>=12.0; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 test = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/jpbrodrick89/jaxtra"
+Issues     = "https://github.com/jpbrodrick89/jaxtra/issues"
+Changelog  = "https://github.com/jpbrodrick89/jaxtra/blob/main/CHANGELOG.md"
 
 # ---------------------------------------------------------------------------
 # scikit-build-core options
@@ -54,7 +71,7 @@ JAXTRA_CUDA = {env = "JAXTRA_CUDA", default = "auto"}
 # ---------------------------------------------------------------------------
 [tool.cibuildwheel]
 # Only build CPython, skip PyPy and 32-bit.
-build = "cp310-* cp311-* cp312-* cp313-*"
+build = "cp311-* cp312-* cp313-* cp314-*"
 skip  = "*-win32 *-manylinux_i686 *-musllinux*"
 
 # Install build dependencies inside each wheel environment.
