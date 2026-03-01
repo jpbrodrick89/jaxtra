@@ -8,8 +8,8 @@ Built on JAX's XLA Foreign Function Interface (FFI): C++/LAPACK (and, soon, CUDA
 
 ## Why jaxtra?
 
-JAX exposes only a small slice of LAPACK and provides no public API for custom GPU lowerings.
-`jaxtra` fills the gap by shipping pre-built XLA FFI kernels that plug directly into the JAX primitive system, matching the calling conventions of `jax.lax.linalg` and `jax.scipy.linalg`.
+JAX does not expose every LAPACK routine or every NVIDIA library function.
+`jaxtra` exposes the missing ones that are practically useful, shipping them as proper JAX primitives that plug directly into the JAX primitive system and match the calling conventions of `jax.lax.linalg` and `jax.scipy.linalg`.
 
 GPU lowerings are under active development and will land shortly.
 
@@ -23,13 +23,15 @@ pip install jaxtra          # or: uv add jaxtra
 
 ```python
 import jax.numpy as jnp
-from jax._src.lax.linalg import geqrf
-from jaxtra import ormqr
+import jaxtra.scipy.linalg as jsla
 
-A = jnp.array([[1, 2], [3, 4], [5, 6]], dtype=jnp.float64)
-b = jnp.ones((3, 1), dtype=jnp.float64)
-H, taus = geqrf(A)                                    # compact QR
-Qtb = ormqr(H, taus, b, left=True, transpose=True)   # Qᵀ @ b, no Q formed
+# Solve a least-squares problem A @ x ≈ b via QR.
+A = jnp.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
+b = jnp.array([2., 4., 5., 4.])
+
+# qr_multiply decomposes A and applies Qᵀ to b in one step — no Q formed.
+Qtb, R = jsla.qr_multiply(A, b, mode='right')
+x = jnp.linalg.solve(R, Qtb)
 ```
 
 ---
