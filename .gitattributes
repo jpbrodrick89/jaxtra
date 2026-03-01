@@ -1,0 +1,3 @@
+# csrc/gpu/jaxlib/ contains files bundled verbatim from the jaxlib source tree.
+# Mark as vendored so GitHub Linguist excludes them from language statistics.
+csrc/gpu/jaxlib/** linguist-vendored=true
