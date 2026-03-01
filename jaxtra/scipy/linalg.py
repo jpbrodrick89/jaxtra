@@ -12,8 +12,7 @@ from typing import Literal, overload
 import numpy as np
 import jax.numpy as jnp
 
-from jax._src.lax.linalg import geqrf as _jax_geqrf
-from jax._src.lax.linalg import geqp3 as _jax_geqp3
+from jax._src.lax.linalg import geqrf, geqp3
 
 from jaxtra._numpy_lapack import ormqr_lapack
 
@@ -156,11 +155,11 @@ def qr_multiply(
     if len(batch_shape) == 0:
         # Non-batched path.
         if pivoting:
-            r, jpvt_out, tau = _jax_geqp3(jnp.asarray(a), jnp.zeros(n, dtype=jnp.int32))
+            r, jpvt_out, tau = geqp3(jnp.asarray(a), jnp.zeros(n, dtype=jnp.int32))
             r, tau, jpvt_out = np.asarray(r), np.asarray(tau), np.asarray(jpvt_out)
             p = jpvt_out - 1  # 1-based → 0-based
         else:
-            r, tau = _jax_geqrf(jnp.asarray(a))
+            r, tau = geqrf(jnp.asarray(a))
             r, tau = np.asarray(r), np.asarray(tau)
             p = None
     else:
@@ -170,12 +169,12 @@ def qr_multiply(
         p_list = []
         for i in range(a_flat.shape[0]):
             if pivoting:
-                ri, pi, ti = _jax_geqp3(jnp.asarray(a_flat[i]), jnp.zeros(n, dtype=jnp.int32))
+                ri, pi, ti = geqp3(jnp.asarray(a_flat[i]), jnp.zeros(n, dtype=jnp.int32))
                 r_list.append(np.asarray(ri))
                 tau_list.append(np.asarray(ti))
                 p_list.append(np.asarray(pi) - 1)
             else:
-                ri, ti = _jax_geqrf(jnp.asarray(a_flat[i]))
+                ri, ti = geqrf(jnp.asarray(a_flat[i]))
                 r_list.append(np.asarray(ri))
                 tau_list.append(np.asarray(ti))
         r = np.stack(r_list).reshape(batch_shape + (m, n))
