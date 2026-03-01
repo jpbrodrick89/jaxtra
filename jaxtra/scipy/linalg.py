@@ -10,10 +10,12 @@ from __future__ import annotations
 from typing import Literal, overload
 
 import numpy as np
+import jax.numpy as jnp
+
+from jax._src.lax.linalg import geqrf as _jax_geqrf
+from jax._src.lax.linalg import geqp3 as _jax_geqp3
 
 from jaxtra._numpy_lapack import ormqr_lapack
-
-import scipy.linalg.lapack as _sl
 
 __all__ = ["qr_multiply"]
 
@@ -23,43 +25,21 @@ __all__ = ["qr_multiply"]
 # ---------------------------------------------------------------------------
 
 def _geqrf(a: np.ndarray):
-    """Call LAPACK geqrf and return (QR-factor array, tau)."""
-    dtype = a.dtype
-    if np.issubdtype(dtype, np.complexfloating):
-        if dtype == np.complex64:
-            fn = _sl.cgeqrf
-        else:
-            fn = _sl.zgeqrf
-    else:
-        if dtype == np.float32:
-            fn = _sl.sgeqrf
-        else:
-            fn = _sl.dgeqrf
-
-    r, tau, _, info = fn(a)
-    if info != 0:
-        raise RuntimeError(f"geqrf failed (info={info})")
-    return r, tau
+    """Delegate to JAX's geqrf primitive."""
+    r, tau = _jax_geqrf(jnp.asarray(a))
+    return np.asarray(r), np.asarray(tau)
 
 
 def _geqp3(a: np.ndarray):
-    """Call LAPACK geqp3 (pivoted QR) and return (r, tau, jpvt)."""
-    dtype = a.dtype
-    if np.issubdtype(dtype, np.complexfloating):
-        if dtype == np.complex64:
-            fn = _sl.cgeqp3
-        else:
-            fn = _sl.zgeqp3
-    else:
-        if dtype == np.float32:
-            fn = _sl.sgeqp3
-        else:
-            fn = _sl.dgeqp3
+    """Delegate to JAX's geqp3 primitive.
 
-    r, jpvt_out, tau, _, info = fn(a)
-    if info != 0:
-        raise RuntimeError(f"geqp3 failed (info={info})")
-    return r, tau, jpvt_out
+    Returns (r, tau, jpvt) where jpvt uses LAPACK's 1-based convention,
+    matching the behaviour of the previous direct LAPACK call.
+    """
+    n = a.shape[-1]
+    jpvt_init = jnp.zeros(n, dtype=jnp.int32)
+    r, jpvt_out, tau = _jax_geqp3(jnp.asarray(a), jpvt_init)
+    return np.asarray(r), np.asarray(tau), np.asarray(jpvt_out)
 
 
 def _promote_inexact(*arrays: np.ndarray):
