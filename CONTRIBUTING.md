@@ -163,18 +163,22 @@ pip install -e . --no-build-isolation
 
 ### uv
 
-uv does not forward `--no-build-isolation` the same way, so pass the CMake
-build step explicitly:
+Use `uv sync` with `--reinstall-package` to force a rebuild of the local
+package without touching the rest of the environment:
 
 ```bash
-uv pip install -e . --no-build-isolation
+uv sync --reinstall-package jaxtra --no-build-isolation
 ```
+
+`--no-build-isolation` is required because the CMake build needs `jax` and
+`jaxlib` (for the XLA FFI headers) to already be present in the environment;
+without this flag uv would build in an isolated venv where they are absent.
 
 If that still pulls stale build artifacts, wipe the CMake cache first:
 
 ```bash
 rm -rf _skbuild build
-uv pip install -e . --no-build-isolation
+uv sync --reinstall-package jaxtra --no-build-isolation
 ```
 
 `scikit-build-core` with `editable.mode = "inplace"` (set in `pyproject.toml`)
