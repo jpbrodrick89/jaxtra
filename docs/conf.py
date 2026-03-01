@@ -24,6 +24,7 @@ project = "jaxtra"
 author = "jpbrodrick89"
 copyright = "2025, jpbrodrick89"
 release = "0.1.0"
+root_doc = "index"
 
 # ---------------------------------------------------------------------------
 # Extensions

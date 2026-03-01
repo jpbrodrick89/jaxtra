@@ -3,8 +3,6 @@ API Reference
 
 .. currentmodule:: jaxtra
 
-----
-
 ``jaxtra``
 ----------
 
