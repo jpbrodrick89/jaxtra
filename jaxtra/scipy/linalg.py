@@ -9,207 +9,144 @@ from __future__ import annotations
 
 from typing import Literal, overload
 
-import numpy as np
 import jax.numpy as jnp
 
+from jax._src.numpy.util import promote_dtypes_inexact
+from jax._src.typing import Array, ArrayLike
 from jax._src.lax.linalg import geqrf, geqp3
 
-from jaxtra._numpy_lapack import ormqr_lapack
+from jaxtra._core import ormqr
 
 __all__ = ["qr_multiply"]
 
 
-def _promote_inexact(*arrays: np.ndarray):
-    """Promote all arrays to a common floating/complex dtype."""
-    dtype = np.result_type(*[a.dtype for a in arrays])
-    if not (np.issubdtype(dtype, np.floating) or
-            np.issubdtype(dtype, np.complexfloating)):
-        dtype = np.float64
-    # Promote to at least float32.
-    if dtype == np.float16:
-        dtype = np.float32
-    return tuple(a.astype(dtype) for a in arrays)
-
-
-# ---------------------------------------------------------------------------
-# Public overloads (for type checkers)
-# ---------------------------------------------------------------------------
+@overload
+def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
+                pivoting: Literal[False] = False, conjugate: bool = False,
+                overwrite_a: bool = False, overwrite_c: bool = False
+                ) -> tuple[Array, Array]: ...
 
 @overload
-def qr_multiply(
-    a: np.ndarray, c: np.ndarray, mode: str = "right",
-    pivoting: Literal[False] = False, conjugate: bool = False,
-    overwrite_a: bool = False, overwrite_c: bool = False,
-) -> tuple[np.ndarray, np.ndarray]: ...
-
+def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
+                pivoting: Literal[True] = True, conjugate: bool = False,
+                overwrite_a: bool = False, overwrite_c: bool = False
+                ) -> tuple[Array, Array, Array]: ...
 
 @overload
-def qr_multiply(
-    a: np.ndarray, c: np.ndarray, mode: str = "right",
-    pivoting: Literal[True] = True, conjugate: bool = False,
-    overwrite_a: bool = False, overwrite_c: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]: ...
+def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
+                pivoting: bool = False, conjugate: bool = False,
+                overwrite_a: bool = False, overwrite_c: bool = False
+                ) -> tuple[Array, Array] | tuple[Array, Array, Array]: ...
 
 
-# ---------------------------------------------------------------------------
-# Implementation
-# ---------------------------------------------------------------------------
+def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
+                pivoting: bool = False, conjugate: bool = False,
+                overwrite_a: bool = False, overwrite_c: bool = False
+                ) -> tuple[Array, Array] | tuple[Array, Array, Array]:
+  """Calculate the QR decomposition and multiply Q with a matrix.
 
-def qr_multiply(
-    a: np.ndarray,
-    c: np.ndarray,
-    mode: str = "right",
-    pivoting: bool = False,
-    conjugate: bool = False,
-    overwrite_a: bool = False,
-    overwrite_c: bool = False,
-) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """QR decomposition combined with a Q-multiply step.
+  JAX implementation of :func:`scipy.linalg.qr_multiply`.
 
-    A preview of :func:`jax.scipy.linalg.qr_multiply` implemented via LAPACK
-    through SciPy so it can be used before the upstream PR is merged.
+  Args:
+    a: array of shape ``(..., M, N)``. Matrix to be decomposed.
+    c: array to be multiplied by Q. For ``mode='left'``, ``c`` has shape
+      ``(..., K, P)`` where ``K = min(M, N)``. For ``mode='right'``, ``c``
+      has shape ``(..., P, M)``. 1-D arrays are supported: for
+      ``mode='left'``, treated as a length-``K`` column vector; for
+      ``mode='right'``, treated as a length-``M`` row vector. The result
+      is raveled back to 1-D in either case.
+    mode: ``'right'`` (default) or ``'left'``.
 
-    Computes the QR decomposition of *a* and multiplies *c* by the resulting
-    Q matrix without ever materialising Q.
+      - ``'left'``: compute ``Q @ c`` (or ``conj(Q) @ c`` if ``conjugate=True``)
+        and return ``(Q @ c, R)`` with result shape ``(..., M, P)``
+      - ``'right'``: compute ``c @ Q`` (or ``c @ conj(Q)`` if ``conjugate=True``)
+        and return ``(c @ Q, R)`` with result shape ``(..., P, K)`` where
+        ``K = min(M, N)``
+    pivoting: Allows the QR decomposition to be rank-revealing. If ``True``, compute
+      the column-pivoted QR decomposition and return permutation indices
+      as a third element.
+    conjugate: If ``True``, use ``conj(Q)`` (element-wise complex conjugate)
+      instead of ``Q``. For real arrays this has no effect.
+    overwrite_a: unused in JAX
+    overwrite_c: unused in JAX
 
-    Parameters
-    ----------
-    a:
-        Matrix to decompose, shape ``(..., M, N)``.
-    c:
-        Matrix (or 1-D vector) to multiply by Q.
+  Returns:
+    If ``pivoting`` is ``False``: ``(result, R)``
 
-        - ``mode='left'``:  shape ``(..., K, P)`` where ``K = min(M, N)``.
-          A 1-D array is treated as a column vector of length ``K``.
-        - ``mode='right'``: shape ``(..., P, M)``.
-          A 1-D array is treated as a row vector of length ``M``.
+    If ``pivoting`` is ``True``: ``(result, R, P)``
 
-        In both cases a 1-D result is returned for 1-D input.
-    mode:
-        ``'right'`` (default) computes ``c @ Q`` and returns the result
-        truncated to ``K = min(M, N)`` columns.  ``'left'`` computes ``Q @ c``.
-    pivoting:
-        If ``True``, perform column-pivoted QR (geqp3) and return a third
-        element containing 0-based permutation indices.
-    conjugate:
-        If ``True``, apply the element-wise complex conjugate of Q (i.e. use
-        ``conj(Q)`` rather than Q).  For real arrays this has no effect.
-    overwrite_a, overwrite_c:
-        Ignored (present for API compatibility with
-        :func:`scipy.linalg.qr_multiply`).
+  See also:
+    - :func:`jax.scipy.linalg.qr`: SciPy-style QR decomposition API
+    - :func:`jax.lax.linalg.ormqr`: XLA-style Q-multiply primitive
 
-    Returns
-    -------
-    result : numpy.ndarray
-        ``Q @ c`` or ``c @ Q`` (possibly conjugated), same leading batch
-        dimensions as the inputs.
-    R : numpy.ndarray
-        Upper-triangular factor, shape ``(..., K, N)``.
-    P : numpy.ndarray
-        *(only when* ``pivoting=True`` *)* 0-based column permutation indices,
-        shape ``(..., N,)``.
+  Examples:
+    Use :func:`qr_multiply` to efficiently solve a least-squares problem.
+    For an overdetermined system ``A @ x ≈ b``, pass ``b`` as a 1-D row
+    via ``mode='right'`` to obtain ``Q^T @ b`` and ``R`` in one step:
 
-    Examples
-    --------
-    Least-squares via ``Qᵀb`` and back-substitution:
+    >>> import jax
+    >>> import jax.numpy as jnp
+    >>> A = jnp.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
+    >>> b = jnp.array([2., 4., 5., 4.])
+    >>> Qtb, R = jax.scipy.linalg.qr_multiply(A, b, mode='right')
+    >>> x = jax.scipy.linalg.solve_triangular(R, Qtb)
+    >>> jnp.allclose(A.T @ A @ x, A.T @ b)
+    Array(True, dtype=bool)
+  """
+  del overwrite_a, overwrite_c  # unused
+  a, c = promote_dtypes_inexact(jnp.asarray(a), jnp.asarray(c))
+  if mode not in ('right', 'left'):
+    raise ValueError(f"mode must be 'right' or 'left', got {mode!r}")
 
-    >>> import numpy as np
-    >>> from jaxtra.scipy.linalg import qr_multiply
-    >>> A = np.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
-    >>> b = np.array([2., 4., 5., 4.])
-    >>> Qtb, R = qr_multiply(A, b, mode='right')
-    >>> x = np.linalg.solve(R, Qtb)   # back-substitution for square R
-    """
-    del overwrite_a, overwrite_c  # unused
+  onedim = c.ndim == 1
+  if onedim:
+    c = c[:, None] if mode == 'left' else c[None, :]
 
-    a, c = np.asarray(a), np.asarray(c)
-    a, c = _promote_inexact(a, c)
+  m, n = a.shape[-2:]
+  k = min(m, n)
 
-    if mode not in ("right", "left"):
-        raise ValueError(f"mode must be 'right' or 'left', got {mode!r}")
+  if mode == 'left':
+    if c.shape[-2] != k:
+      raise ValueError(
+          f"Array shapes are not compatible for Q @ c operation: "
+          f"a has shape {tuple(a.shape)} so Q has {k} columns, "
+          f"but c has {c.shape[-2]} rows (expected {k}).")
+  else:
+    if c.shape[-1] != m:
+      raise ValueError(
+          f"Array shapes are not compatible for c @ Q operation: "
+          f"a has shape {tuple(a.shape)} so Q has {m} rows, "
+          f"but c has {c.shape[-1]} columns (expected {m}).")
 
-    onedim = c.ndim == 1
-    if onedim:
-        c = c[:, np.newaxis] if mode == "left" else c[np.newaxis, :]
+  if pivoting:
+    jpvt = jnp.zeros(a.shape[:-2] + (n,), dtype=jnp.int32)
+    r, p, taus = geqp3(a, jpvt)
+    p -= 1  # Convert geqp3's 1-based indices to 0-based indices by subtracting 1.
+  else:
+    r, taus = geqrf(a)
 
-    m, n = a.shape[-2], a.shape[-1]
-    k = min(m, n)
+  if m > n and mode == 'left':
+    zeros = jnp.zeros(c.shape[:-2] + (m - k,) + c.shape[-1:], dtype=c.dtype)
+    c = jnp.concatenate([c, zeros], axis=-2)
 
-    if mode == "left":
-        if c.shape[-2] != k:
-            raise ValueError(
-                f"Incompatible shapes for Q @ c: a has shape {a.shape} so "
-                f"Q has {k} columns, but c has {c.shape[-2]} rows (expected {k})."
-            )
-    else:
-        if c.shape[-1] != m:
-            raise ValueError(
-                f"Incompatible shapes for c @ Q: a has shape {a.shape} so "
-                f"Q has {m} rows, but c has {c.shape[-1]} columns (expected {m})."
-            )
+  if conjugate:
+    c = c.swapaxes(-1, -2)
 
-    # -----------------------------------------------------------------------
-    # QR factorization (possibly pivoted)
-    # -----------------------------------------------------------------------
-    batch_shape = a.shape[:-2]
-    if len(batch_shape) == 0:
-        # Non-batched path.
-        if pivoting:
-            r, jpvt_out, tau = geqp3(jnp.asarray(a), jnp.zeros(n, dtype=jnp.int32))
-            r, tau, jpvt_out = np.asarray(r), np.asarray(tau), np.asarray(jpvt_out)
-            p = jpvt_out - 1  # 1-based → 0-based
-        else:
-            r, tau = geqrf(jnp.asarray(a))
-            r, tau = np.asarray(r), np.asarray(tau)
-            p = None
-    else:
-        # Batched path: loop over batch dimensions.
-        a_flat = a.reshape(-1, m, n)
-        r_list, tau_list = [], []
-        p_list = []
-        for i in range(a_flat.shape[0]):
-            if pivoting:
-                ri, pi, ti = geqp3(jnp.asarray(a_flat[i]), jnp.zeros(n, dtype=jnp.int32))
-                r_list.append(np.asarray(ri))
-                tau_list.append(np.asarray(ti))
-                p_list.append(np.asarray(pi) - 1)
-            else:
-                ri, ti = geqrf(jnp.asarray(a_flat[i]))
-                r_list.append(np.asarray(ri))
-                tau_list.append(np.asarray(ti))
-        r = np.stack(r_list).reshape(batch_shape + (m, n))
-        tau = np.stack(tau_list).reshape(batch_shape + (min(m, n),))
-        p = np.stack(p_list).reshape(batch_shape + (n,)) if pivoting else None
+  # conjugate swaps left/right because c and Q change sides when transposing.
+  left = (mode == 'left') != conjugate
+  cQ = ormqr(r, taus, c, left=left, transpose=conjugate)
 
-    # -----------------------------------------------------------------------
-    # Pad c if needed (left mode, m > n: Q is m×m but c may be k×P).
-    # -----------------------------------------------------------------------
-    if m > n and mode == "left":
-        pad_shape = c.shape[:-2] + (m - k,) + c.shape[-1:]
-        zeros = np.zeros(pad_shape, dtype=c.dtype)
-        c = np.concatenate([c, zeros], axis=-2)
+  if conjugate:
+    cQ = cQ.swapaxes(-1, -2)
 
-    # -----------------------------------------------------------------------
-    # conjugate swaps left/right because transposing C swaps which side Q is on.
-    # -----------------------------------------------------------------------
-    if conjugate:
-        c = c.swapaxes(-1, -2)
+  if mode == 'right':
+    cQ = cQ[..., :k]
 
-    left = (mode == "left") != conjugate
-    cQ = ormqr_lapack(r, tau, c, left=left, transpose=conjugate)
+  if onedim:
+    cQ = cQ.ravel()
 
-    if conjugate:
-        cQ = cQ.swapaxes(-1, -2)
+  r = jnp.triu(r[..., :k, :])
 
-    if mode == "right":
-        cQ = cQ[..., :k]
-
-    if onedim:
-        cQ = cQ.ravel()
-
-    # Upper-triangular R, trimmed to k rows.
-    r_upper = np.triu(r[..., :k, :])
-
-    if pivoting:
-        return cQ, r_upper, p
-    return cQ, r_upper
+  if pivoting:
+    return cQ, r, p
+  return cQ, r
