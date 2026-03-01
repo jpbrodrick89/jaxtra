@@ -97,7 +97,7 @@ Adjust `.Arg<>`, `.Attr<>`, and `.Ret<>` to match your LAPACK routine's
 signature:
 
 ```cpp
-#define JAXTRA_DEFINE_MYNEW(name, dtype)                          \
+#define JAXTRA_CPU_DEFINE_MYNEW(name, dtype)                          \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(                                   \
       name, MyNewKernel<dtype>::Kernel,                             \
       ffi::Ffi::Bind()                                             \
@@ -106,10 +106,10 @@ signature:
           .Attr<bool>("some_attr")                                  \
           .Ret<ffi::Buffer<dtype>>())
 
-JAXTRA_DEFINE_MYNEW(lapack_smynew_ffi, ffi::DataType::F32);
-JAXTRA_DEFINE_MYNEW(lapack_dmynew_ffi, ffi::DataType::F64);
-JAXTRA_DEFINE_MYNEW(lapack_cmynew_ffi, ffi::DataType::C64);
-JAXTRA_DEFINE_MYNEW(lapack_zmynew_ffi, ffi::DataType::C128);
+JAXTRA_CPU_DEFINE_MYNEW(lapack_smynew_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_MYNEW(lapack_dmynew_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_MYNEW(lapack_cmynew_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_MYNEW(lapack_zmynew_ffi, ffi::DataType::C128);
 ```
 
 **Step 2:** Inside `initialize()`, load the function pointers from

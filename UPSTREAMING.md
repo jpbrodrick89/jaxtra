@@ -64,7 +64,7 @@ The `GetWorkspaceSize` and `Kernel` function bodies are identical. The explicit 
 
 In jaxtra, `csrc/jaxtra_module.cc` does three things: it defines the XLA FFI handler symbols, it assigns the LAPACK function pointers in `initialize()`, and it returns the registrations dict. In jaxlib, the same three things are folded into the existing `cpu_kernels.cc`:
 
-**Handler symbols.** Add the macro invocations from jaxtra's `JAXTRA_DEFINE_<ROUTINE>` block. Rename the macro prefix to `JAX_CPU_DEFINE_<ROUTINE>`; the body is identical. Instantiate the macro once per dtype (F32, F64, C64, C128 for a full-precision LAPACK routine).
+**Handler symbols.** Add the macro invocations from jaxtra's `JAXTRA_CPU_DEFINE_<ROUTINE>` block. Rename the macro prefix to `JAX_CPU_DEFINE_<ROUTINE>`; the body is identical. Instantiate the macro once per dtype (F32, F64, C64, C128 for a full-precision LAPACK routine).
 
 **Function pointer assignment.** Find `GetLapackKernelsFromScipy()` (the equivalent of jaxtra's `initialize()`). Add one `AssignKernelFn<Kernel<dtype>>(lapack_ptr("<lapack_name>"))` call per dtype alongside the existing ones.
 

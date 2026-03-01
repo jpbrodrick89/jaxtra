@@ -26,9 +26,9 @@ void AssignKernelFn(void* fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Handler macro — mirrors JAX_CPU_DEFINE_ORMQR from the upstream PR.
+// Handler macro — mirrors JAX_CPU_DEFINE_ORMQR in jaxlib upstream.
 // ---------------------------------------------------------------------------
-#define JAXTRA_DEFINE_ORMQR(name, dtype)                         \
+#define JAXTRA_CPU_DEFINE_ORMQR(name, dtype)                     \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
       name, OrthogonalQrMultiply<dtype>::Kernel,                  \
       ffi::Ffi::Bind()                                            \
@@ -43,10 +43,10 @@ void AssignKernelFn(void* fn) {
 // XLA FFI handler bindings (typed API, api_version=1).
 // Names match JAX PR #35104.
 // ---------------------------------------------------------------------------
-JAXTRA_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32);
-JAXTRA_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
-JAXTRA_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64);
-JAXTRA_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
+JAXTRA_CPU_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
 
 // ---------------------------------------------------------------------------
 // Module
