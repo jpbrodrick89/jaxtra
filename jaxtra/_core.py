@@ -68,7 +68,7 @@ for _platform, _targets in _jaxtra.registrations().items():
             _name, _capsule, platform=_platform, api_version=_api_version
         )
 
-# GPU registration: load _jaxtra_cuda if available (built with -DJAXTRA_CUDA=ON).
+# GPU registration: load _jaxtra_cuda if available (auto-built when CUDA toolkit is present).
 # Mirrors how jaxlib registers GPU targets: the GPU extension exposes
 # registrations() returning {platform: [(name, capsule, api_version)]}.
 # _ormqr_cpu_gpu_lowering already routes GPU calls to "cusolver_ormqr_ffi";

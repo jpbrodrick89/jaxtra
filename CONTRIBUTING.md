@@ -33,7 +33,7 @@ csrc/
         solver_handle_pool.h/cc   SolverHandlePool::Borrow
         solver_interface.h/cc     OrmqrBufferSize<T>, Ormqr<T> cuSolver wrappers
         solver_kernels_ffi.h/cc   OrmqrFfi XLA FFI handler
-CMakeLists.txt              build system (-DJAXTRA_CUDA=ON enables GPU extension)
+CMakeLists.txt              build system (auto-detects CUDA; JAXTRA_CUDA env var overrides)
 jaxtra/
   _core.py                  JAX primitives + lowerings (CPU and GPU)
   lax/linalg.py             jaxtra.lax.linalg public API
@@ -237,10 +237,10 @@ make_entry(JAX_GPU_PREFIX "solver_mynew_ffi",
 ### Building the GPU extension
 
 ```bash
-pip install -e . --no-build-isolation -Ccmake.args="-DJAXTRA_CUDA=ON"
+pip install -e ".[gpu]" --no-build-isolation
 ```
 
-CMake will fetch Abseil automatically if it is not already installed. The CUDA toolkit (including cuSolver) must be present on the system.
+CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. Abseil is fetched automatically via `FetchContent` if not installed system-wide. Override with `JAXTRA_CUDA=ON pip install ...` to make CUDA required (fail if absent).
 
 ---
 
@@ -260,7 +260,7 @@ uv sync --reinstall-package jaxtra --no-build-isolation
 ### CPU + GPU (requires CUDA toolkit)
 
 ```bash
-pip install -e . --no-build-isolation -Ccmake.args="-DJAXTRA_CUDA=ON"
+pip install -e ".[gpu]" --no-build-isolation
 ```
 
 `--no-build-isolation` is required because the CMake build needs `jax` and
@@ -270,7 +270,7 @@ If that still pulls stale build artifacts, wipe the CMake cache first:
 
 ```bash
 rm -rf _skbuild build
-pip install -e . --no-build-isolation          # add -Ccmake.args="-DJAXTRA_CUDA=ON" for GPU
+pip install -e . --no-build-isolation          # or: pip install -e ".[gpu]" --no-build-isolation for GPU
 ```
 
 `scikit-build-core` with `editable.mode = "inplace"` (set in `pyproject.toml`)
@@ -447,5 +447,5 @@ pytest tests/ -v
 | Declare FFI handler symbol | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.h` |
 | Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL` | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc` |
 | Register GPU target in `registrations()` | `csrc/jaxtra_cuda_module.cc` |
-| Rebuild: `pip install -e . --no-build-isolation -Ccmake.args="-DJAXTRA_CUDA=ON"` | — |
+| Rebuild: `pip install -e ".[gpu]" --no-build-isolation` | — |
 | GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_core.py` |

@@ -1,12 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-option(JAXTRA_CUDA "Build CUDA GPU extension (_jaxtra_cuda)" OFF)
+# JAXTRA_CUDA: ON = require CUDA, OFF = skip GPU extension, auto = detect (default).
+# Set via cmake define (-DJAXTRA_CUDA=ON/OFF) or the JAXTRA_CUDA env var (via pyproject.toml).
+# The GPU source files are host code only (no __global__ kernels), so LANGUAGES CUDA is not needed.
+set(JAXTRA_CUDA "auto" CACHE STRING "Build CUDA GPU extension (_jaxtra_cuda): ON | OFF | auto")
 
-if(JAXTRA_CUDA)
-  project(jaxtra LANGUAGES CXX CUDA)
-else()
-  project(jaxtra LANGUAGES CXX)
-endif()
+project(jaxtra LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,7 +75,7 @@ target_compile_options(_jaxtra PRIVATE
 install(TARGETS _jaxtra LIBRARY DESTINATION jaxtra)
 
 # ---------------------------------------------------------------------------
-# GPU extension: _jaxtra_cuda  (built only when -DJAXTRA_CUDA=ON)
+# GPU extension: _jaxtra_cuda  (auto-built when CUDA is detected)
 # ---------------------------------------------------------------------------
 # Non-Bazel equivalents of the jaxlib GPU build rules from PR #35104:
 #   jaxlib/gpu/solver_kernels_ffi.cc  → csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc
@@ -88,9 +87,25 @@ install(TARGETS _jaxtra LIBRARY DESTINATION jaxtra)
 # Bundled jaxlib headers (csrc/gpu/) replace Bazel's @jax//jaxlib deps.
 # Abseil is fetched via FetchContent (Bazel uses @com_google_absl).
 # CUDA headers are found via CMake CUDAToolkit (Bazel uses third_party/gpus).
-if(JAXTRA_CUDA)
-  # --- CUDA toolkit ---
+if(JAXTRA_CUDA STREQUAL "auto")
+  find_package(CUDAToolkit QUIET)
+  if(CUDAToolkit_FOUND)
+    set(_jaxtra_cuda_build ON)
+    message(STATUS "CUDA ${CUDAToolkit_VERSION} auto-detected: building _jaxtra_cuda")
+  else()
+    set(_jaxtra_cuda_build OFF)
+    message(STATUS "CUDA not found: skipping _jaxtra_cuda (install jaxtra[gpu] with CUDA toolkit to enable)")
+  endif()
+elseif(JAXTRA_CUDA)
   find_package(CUDAToolkit REQUIRED)
+  set(_jaxtra_cuda_build ON)
+else()
+  set(_jaxtra_cuda_build OFF)
+  message(STATUS "CUDA GPU extension disabled (JAXTRA_CUDA=OFF)")
+endif()
+
+if(_jaxtra_cuda_build)
+  # CUDAToolkit already found in the detection block above.
 
   # --- Abseil (Bazel uses @com_google_absl; here we use FetchContent) ---
   find_package(absl QUIET)
@@ -140,7 +155,5 @@ if(JAXTRA_CUDA)
   )
 
   install(TARGETS _jaxtra_cuda LIBRARY DESTINATION jaxtra)
-  message(STATUS "CUDA GPU extension enabled (_jaxtra_cuda)")
-else()
-  message(STATUS "CUDA GPU extension disabled (pass -DJAXTRA_CUDA=ON to enable)")
+  message(STATUS "Building _jaxtra_cuda (CUDA GPU extension)")
 endif()
