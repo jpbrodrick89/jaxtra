@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(jaxtra LANGUAGES CXX)
+
+option(JAXTRA_CUDA "Build CUDA GPU extension (_jaxtra_cuda)" OFF)
+
+if(JAXTRA_CUDA)
+  project(jaxtra LANGUAGES CXX CUDA)
+else()
+  project(jaxtra LANGUAGES CXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -67,3 +74,73 @@ target_compile_options(_jaxtra PRIVATE
 
 # Install next to the jaxtra Python package so it can be imported.
 install(TARGETS _jaxtra LIBRARY DESTINATION jaxtra)
+
+# ---------------------------------------------------------------------------
+# GPU extension: _jaxtra_cuda  (built only when -DJAXTRA_CUDA=ON)
+# ---------------------------------------------------------------------------
+# Non-Bazel equivalents of the jaxlib GPU build rules from PR #35104:
+#   jaxlib/gpu/solver_kernels_ffi.cc  → csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc
+#   jaxlib/gpu/solver_interface.cc    → csrc/gpu/jaxlib/gpu/solver_interface.cc
+#   jaxlib/gpu/gpu_kernel_helpers.cc  → csrc/gpu/jaxlib/gpu/gpu_kernel_helpers.cc
+#   jaxlib/gpu/solver_handle_pool.cc  → csrc/gpu/jaxlib/gpu/solver_handle_pool.cc
+#   jaxlib/gpu/solver.cc + gpu_kernels.cc → csrc/jaxtra_cuda_module.cc
+#
+# Bundled jaxlib headers (csrc/gpu/) replace Bazel's @jax//jaxlib deps.
+# Abseil is fetched via FetchContent (Bazel uses @com_google_absl).
+# CUDA headers are found via CMake CUDAToolkit (Bazel uses third_party/gpus).
+if(JAXTRA_CUDA)
+  # --- CUDA toolkit ---
+  find_package(CUDAToolkit REQUIRED)
+
+  # --- Abseil (Bazel uses @com_google_absl; here we use FetchContent) ---
+  find_package(absl QUIET)
+  if(NOT absl_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+      abseil-cpp
+      GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
+      GIT_TAG        20240722.0
+      GIT_SHALLOW    TRUE
+    )
+    set(ABSL_PROPAGATE_CXX_STD ON)
+    set(BUILD_TESTING OFF)
+    FetchContent_MakeAvailable(abseil-cpp)
+  endif()
+
+  # --- _jaxtra_cuda module ---
+  nanobind_add_module(_jaxtra_cuda MODULE
+    csrc/jaxtra_cuda_module.cc
+    csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc
+    csrc/gpu/jaxlib/gpu/solver_interface.cc
+    csrc/gpu/jaxlib/gpu/gpu_kernel_helpers.cc
+    csrc/gpu/jaxlib/gpu/solver_handle_pool.cc
+  )
+
+  target_compile_definitions(_jaxtra_cuda PRIVATE JAX_GPU_CUDA)
+
+  target_include_directories(_jaxtra_cuda PRIVATE
+    ${XLA_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/gpu   # resolves "jaxlib/gpu/..." bundled headers
+    ${CUDAToolkit_INCLUDE_DIRS}
+  )
+
+  target_compile_options(_jaxtra_cuda PRIVATE
+    -Wno-sign-conversion
+    -Wno-unused-parameter
+  )
+
+  target_link_libraries(_jaxtra_cuda PRIVATE
+    CUDA::cusolver
+    absl::status
+    absl::statusor
+    absl::str_format
+    absl::strings
+    absl::log
+    absl::synchronization
+  )
+
+  install(TARGETS _jaxtra_cuda LIBRARY DESTINATION jaxtra)
+  message(STATUS "CUDA GPU extension enabled (_jaxtra_cuda)")
+else()
+  message(STATUS "CUDA GPU extension disabled (pass -DJAXTRA_CUDA=ON to enable)")
+endif()

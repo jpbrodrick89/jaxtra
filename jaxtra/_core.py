@@ -68,6 +68,35 @@ for _platform, _targets in _jaxtra.registrations().items():
             _name, _capsule, platform=_platform, api_version=_api_version
         )
 
+# GPU registration: load _jaxtra_cuda if available (built with -DJAXTRA_CUDA=ON).
+# Mirrors how jaxlib registers GPU targets: the GPU extension exposes
+# registrations() returning {platform: [(name, capsule, api_version)]}.
+# _ormqr_cpu_gpu_lowering already routes GPU calls to "cusolver_ormqr_ffi";
+# this block makes that target available when the CUDA extension is present.
+def _load_gpu_extension():
+    mod_name = "jaxtra._jaxtra_cuda"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    here = os.path.dirname(__file__)
+    candidates = []
+    for d in (here, os.path.dirname(here)):
+        candidates.extend(glob.glob(os.path.join(d, "_jaxtra_cuda*.so")))
+    if not candidates:
+        return None
+    spec = importlib.util.spec_from_file_location(mod_name, candidates[0])
+    ext = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = ext
+    spec.loader.exec_module(ext)
+    return ext
+
+_jaxtra_cuda = _load_gpu_extension()
+if _jaxtra_cuda is not None:
+    for _platform, _targets in _jaxtra_cuda.registrations().items():
+        for _name, _capsule, _api_version in _targets:
+            ffi.register_ffi_target(
+                _name, _capsule, platform=_platform, api_version=_api_version
+            )
+
 
 # ---------------------------------------------------------------------------
 # Orthogonal QR multiply  (verbatim from PR #35104)
