@@ -1,6 +1,6 @@
 # Upstreaming a jaxtra routine to JAX
 
-Once a routine has been battle-tested in the wild and explicitly requested by users via a JAX GitHub issue, it is ready to be proposed for inclusion in JAX proper. This document explains how to do that. It is concrete enough to reconstruct PR #35104 (`ormqr` / `qr_multiply`) step by step, and is intended to generalise to any future routine exposed through jaxtra.
+Once a routine has been battle-tested in the wild and explicitly requested by users via a JAX GitHub issue, it is ready to be proposed for inclusion in JAX proper. This document explains how to do that. The appendix uses `ormqr` / `qr_multiply` (PR #35104) as a concrete worked example.
 
 ---
 
@@ -18,6 +18,12 @@ jaxtra is deliberately written to mirror the structure of jaxlib. The kernel cod
 | FFI target registration | `_core.py` `_load_extension()` block | Done inside jaxlib at import time; omit entirely |
 | JAX primitive | `jaxtra/_core.py` | `jax/_src/lax/linalg.py` |
 | scipy-level public API | `jaxtra/scipy/linalg.py` | `jax/_src/scipy/linalg.py` + re-export in `jax/scipy/linalg.py` |
+
+---
+
+## Selecting what to upstream
+
+A single PR should contain exactly one routine (or one tightly related group, e.g. a LAPACK function and its scipy-level wrapper). Do not bundle unrelated routines. The PR description should link to the JAX GitHub issue that requested the feature.
 
 ---
 
@@ -56,45 +62,13 @@ The `GetWorkspaceSize` and `Kernel` function bodies are identical. The explicit 
 
 ### 1c. `jaxlib/cpu/cpu_kernels.cc` — handler definitions and registration
 
-In jaxtra, `csrc/jaxtra_module.cc` does three things: it defines the XLA FFI handler symbols, it assigns the LAPACK function pointers in `initialize()`, and it returns the registrations dict. In jaxlib, the same three things are split across the existing `cpu_kernels.cc`:
+In jaxtra, `csrc/jaxtra_module.cc` does three things: it defines the XLA FFI handler symbols, it assigns the LAPACK function pointers in `initialize()`, and it returns the registrations dict. In jaxlib, the same three things are folded into the existing `cpu_kernels.cc`:
 
-**Handler symbols.** Add the macro invocations from jaxtra's `JAXTRA_DEFINE_ORMQR` block. Rename the macro to match jaxlib's convention (e.g. `JAX_CPU_DEFINE_ORMQR`); the body is identical:
+**Handler symbols.** Add the macro invocations from jaxtra's `JAXTRA_DEFINE_<ROUTINE>` block. Rename the macro prefix to `JAX_CPU_DEFINE_<ROUTINE>`; the body is identical. Instantiate the macro once per dtype (F32, F64, C64, C128 for a full-precision LAPACK routine).
 
-```cpp
-#define JAX_CPU_DEFINE_ORMQR(name, dtype)                        \
-  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
-      name, OrthogonalQrMultiply<dtype>::Kernel,                  \
-      ffi::Ffi::Bind()                                            \
-          .Arg<ffi::Buffer<dtype>>()   /* a */                    \
-          .Arg<ffi::Buffer<dtype>>()   /* tau */                  \
-          .Arg<ffi::Buffer<dtype>>()   /* c */                    \
-          .Attr<bool>("left")                                     \
-          .Attr<bool>("transpose")                                \
-          .Ret<ffi::Buffer<dtype>>())  /* c_out */
+**Function pointer assignment.** Find `GetLapackKernelsFromScipy()` (the equivalent of jaxtra's `initialize()`). Add one `AssignKernelFn<Kernel<dtype>>(lapack_ptr("<lapack_name>"))` call per dtype alongside the existing ones.
 
-JAX_CPU_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32);
-JAX_CPU_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
-JAX_CPU_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64);
-JAX_CPU_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
-```
-
-**Function pointer assignment.** Find the existing `GetLapackKernelsFromScipy()` function (the direct equivalent of jaxtra's `initialize()`). Add the four `AssignKernelFn` calls alongside the existing ones:
-
-```cpp
-AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F32>>(lapack_ptr("sormqr"));
-AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F64>>(lapack_ptr("dormqr"));
-AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C64>>(lapack_ptr("cunmqr"));
-AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C128>>(lapack_ptr("zunmqr"));
-```
-
-**Handler registration.** Find the block where existing LAPACK handlers are appended to the registration list (the equivalent of jaxtra's `make_entry(...)` calls in `registrations()`). Add four entries using the same pattern:
-
-```cpp
-make_entry("lapack_sormqr_ffi", reinterpret_cast<void*>(lapack_sormqr_ffi));
-make_entry("lapack_dormqr_ffi", reinterpret_cast<void*>(lapack_dormqr_ffi));
-make_entry("lapack_cunmqr_ffi", reinterpret_cast<void*>(lapack_cunmqr_ffi));
-make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
-```
+**Handler registration.** Find the block where existing LAPACK handlers are appended to the registration list (equivalent of jaxtra's `make_entry(...)` calls). Add one `make_entry("lapack_<name>_ffi", reinterpret_cast<void*>(lapack_<name>_ffi))` per dtype.
 
 ---
 
@@ -141,11 +115,11 @@ If the build fails on a C++ error, the Bazel output will include the file and li
 
 Copy the following from `jaxtra/_core.py` verbatim into `jax/_src/lax/linalg.py`:
 
-- The public function (`ormqr`)
-- The shape rule (`_ormqr_shape_rule`)
-- The Python fallback lowering (`_ormqr_lowering`)
-- The CPU/GPU lowering (`_ormqr_cpu_gpu_lowering`)
-- The primitive registration block (`ormqr_p = standard_linalg_primitive(...)` and the two `register_lowering` calls)
+- The public function(s) for the routine
+- The shape rule (`_<routine>_shape_rule`)
+- The Python fallback lowering (`_<routine>_lowering`)
+- The CPU/GPU lowering (`_<routine>_cpu_gpu_lowering`)
+- The primitive registration block (`<routine>_p = standard_linalg_primitive(...)` and the `register_lowering` calls)
 
 **Remove entirely:**
 
@@ -160,21 +134,21 @@ Add the new public names to `__all__` at the top of the file.
 
 ### 4b. `jax/_src/scipy/linalg.py` (if the routine has a scipy-level wrapper)
 
-Copy `qr_multiply` (or the equivalent wrapper) from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. Update imports to point at `jax._src.lax.linalg` rather than `jaxtra._core`. Add the new symbol to the re-export list in `jax/scipy/linalg.py`.
+Copy the wrapper from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. Update imports to point at `jax._src.lax.linalg` rather than `jaxtra._core`. Add the new symbol to the re-export list in `jax/scipy/linalg.py`.
 
 ---
 
 ## Step 5 — Tests
 
-Copy `tests/test_ormqr.py` (or the relevant test file) into `tests/` inside the JAX repo. Update the import lines:
+Copy the relevant test file(s) from `tests/` into `tests/` inside the JAX repo. Update the import lines:
 
 ```python
 # Before (jaxtra)
-from jaxtra import ormqr
+from jaxtra import <routine>
 import jaxtra.scipy.linalg as jsla
 
 # After (JAX)
-from jax._src.lax.linalg import ormqr
+from jax._src.lax.linalg import <routine>
 import jax.scipy.linalg as jsla
 ```
 
@@ -188,7 +162,9 @@ The parametrised dtype/shape/JIT/vmap coverage in the jaxtra test suite is suffi
 
 ---
 
-## Appendix: file-by-file map for `ormqr` / `qr_multiply` (PR #35104)
+## Appendix: worked example — `ormqr` / `qr_multiply` (PR #35104)
+
+### File-by-file map
 
 | jaxtra | JAX / jaxlib | Changes required |
 |---|---|---|
@@ -198,3 +174,43 @@ The parametrised dtype/shape/JIT/vmap coverage in the jaxtra test suite is suffi
 | `jaxtra/_core.py` (primitive + lowerings) | `jax/_src/lax/linalg.py` | Drop `_load_extension` block; add names to `__all__` |
 | `jaxtra/scipy/linalg.py` (`qr_multiply`) | `jax/_src/scipy/linalg.py` + `jax/scipy/linalg.py` | Update imports; add to re-export list |
 | `tests/test_ormqr.py` | `tests/lax_scipy_linalg_test.py` (or new file) | Update imports |
+
+### Step 1c detail — `cpu_kernels.cc` additions
+
+**Handler symbols:**
+
+```cpp
+#define JAX_CPU_DEFINE_ORMQR(name, dtype)                        \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
+      name, OrthogonalQrMultiply<dtype>::Kernel,                  \
+      ffi::Ffi::Bind()                                            \
+          .Arg<ffi::Buffer<dtype>>()   /* a */                    \
+          .Arg<ffi::Buffer<dtype>>()   /* tau */                  \
+          .Arg<ffi::Buffer<dtype>>()   /* c */                    \
+          .Attr<bool>("left")                                     \
+          .Attr<bool>("transpose")                                \
+          .Ret<ffi::Buffer<dtype>>())  /* c_out */
+
+JAX_CPU_DEFINE_ORMQR(lapack_sormqr_ffi, ffi::DataType::F32);
+JAX_CPU_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
+JAX_CPU_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64);
+JAX_CPU_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
+```
+
+**Function pointer assignment** (inside `GetLapackKernelsFromScipy()`):
+
+```cpp
+AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F32>>(lapack_ptr("sormqr"));
+AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F64>>(lapack_ptr("dormqr"));
+AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C64>>(lapack_ptr("cunmqr"));
+AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C128>>(lapack_ptr("zunmqr"));
+```
+
+**Handler registration:**
+
+```cpp
+make_entry("lapack_sormqr_ffi", reinterpret_cast<void*>(lapack_sormqr_ffi));
+make_entry("lapack_dormqr_ffi", reinterpret_cast<void*>(lapack_dormqr_ffi));
+make_entry("lapack_cunmqr_ffi", reinterpret_cast<void*>(lapack_cunmqr_ffi));
+make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
+```
