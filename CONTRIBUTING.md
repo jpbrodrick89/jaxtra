@@ -69,18 +69,16 @@ extern template struct MyNewKernel<ffi::DataType::C128>;
 
 ### 1b. `lapack_kernels.cc` — implement the kernel
 
-Implement `GetWorkspaceSize` (LAPACK workspace query with `lwork=-1`) and
-`Kernel` (batch loop over slices, calling `fn`).  Copy the buffer-copy guard:
+Implement two methods:
+
+- **`GetWorkspaceSize`**: call the LAPACK routine with `lwork=-1` to query the required workspace size.
+- **`Kernel`**: loop over batch slices and call `fn`. Add this line before the call:
 
 ```cpp
-CopyIfDiffBuffer(c, c_out);
+CopyIfDiffBuffer(c, c_out);  // copies input → output when XLA doesn't alias them
 ```
 
-This is necessary because the XLA lowering rule uses `operand_output_aliases`
-to let XLA alias the input to the output buffer; `CopyIfDiffBuffer` performs
-the copy only when XLA chooses not to alias.
-
-Add explicit instantiations at the bottom:
+Add explicit instantiations at the bottom of the file:
 
 ```cpp
 template struct MyNewKernel<ffi::DataType::F32>;
