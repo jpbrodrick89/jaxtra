@@ -23,6 +23,7 @@ GPU kernels (cuSolver) are built separately — see [GPU support](#gpu-support) 
 
 ```python
 import jax.numpy as jnp
+import jax.scipy.linalg as jsl
 import jaxtra.scipy.linalg as jsla
 
 # Solve a least-squares problem A @ x ≈ b via QR.
@@ -31,7 +32,7 @@ b = jnp.array([2., 4., 5., 4.])
 
 # qr_multiply decomposes A and applies Qᵀ to b in one step — no Q formed.
 Qtb, R = jsla.qr_multiply(A, b, mode='right')
-x = jnp.linalg.solve(R, Qtb)
+x = jsl.solve_triangular(R, Qtb)
 ```
 
 ---

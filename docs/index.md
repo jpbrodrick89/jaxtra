@@ -1,26 +1,23 @@
 # jaxtra
 
-**Native JAX extensions for LAPACK routines and GPU-accelerated linear algebra via XLA FFI.**
+**JAX extensions for LAPACK routines and GPU-accelerated linear algebra.**
 
-jaxtra ships XLA FFI kernels registered at runtime as proper JAX primitives — fully compatible with `jit`, `vmap`, and `grad` — without requiring a jaxlib rebuild.
-
-:::{note}
-jaxtra is a forward-compatibility shim for [JAX PR #35104](https://github.com/google/jax/pull/35104).
-Once that PR merges, this package can be replaced by a straight import from `jax.lax.linalg`.
-:::
+Registers XLA FFI kernels as proper JAX primitives — fully compatible with `jit`, `vmap`, and `grad` — backed by LAPACK (CPU) and cuSOLVER (GPU).
 
 ## Quick start
 
 ```python
 import jax.numpy as jnp
-from jax._src.lax.linalg import geqrf
-from jaxtra import ormqr
+import jax.scipy.linalg as jsl
+import jaxtra.scipy.linalg as jsla
 
-A = jnp.array([[1., 2.], [3., 4.], [5., 6.]])
-b = jnp.ones((3, 1))
+# Solve a least-squares problem A @ x ≈ b via QR.
+A = jnp.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
+b = jnp.array([2., 4., 5., 4.])
 
-H, taus = geqrf(A)           # compact QR
-Qtb = ormqr(H, taus, b, left=True, transpose=True)  # Qᵀ @ b, no Q formed
+# qr_multiply decomposes A and applies Qᵀ to b in one step — no Q formed.
+Qtb, R = jsla.qr_multiply(A, b, mode='right')
+x = jsl.solve_triangular(R, Qtb)
 ```
 
 ## Installation

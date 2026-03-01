@@ -1,7 +1,7 @@
-"""jaxtra: native JAX extensions for LAPACK routines and GPU-accelerated linear algebra.
+"""jaxtra: JAX extensions for LAPACK routines and GPU-accelerated linear algebra.
 
-Ships XLA FFI kernels registered at runtime as proper JAX primitives — JIT,
-vmap, and grad compatible — without requiring a jaxlib rebuild.
+Registers XLA FFI kernels as proper JAX primitives — JIT, vmap, and grad
+compatible — backed by LAPACK (CPU) and cuSOLVER (GPU).
 
 Currently exposed:
   • ``ormqr``       — apply Q (or Qᵀ/Qᴴ) from a compact Householder QR to a
@@ -17,7 +17,7 @@ Quick start
 >>>
 >>> A = jnp.array([[1,2],[3,4],[5,6]], dtype=jnp.float64)
 >>> b = jnp.ones((3, 1), dtype=jnp.float64)
->>> H, taus = geqrf(A)            # compact QR — taus are first-class JAX arrays
+>>> H, taus = geqrf(A)            # compact QR
 >>> Qtb = ormqr(H, taus, b, left=True, transpose=True)   # Qᵀ @ b, no Q formed
 """
 

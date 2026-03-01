@@ -1,12 +1,10 @@
 """
-jaxtra._core — ormqr primitive, verbatim from JAX PR #35104.
+jaxtra._core — ormqr JAX primitive.
 
-The primitive registration (standard_linalg_primitive, lowerings) is copied
-verbatim from jax/_src/lax/linalg.py (PR #35104).  The LAPACK FFI targets
-(lapack_sormqr_ffi, lapack_dormqr_ffi, lapack_cunmqr_ffi, lapack_zunmqr_ffi)
-are registered from our C extension, which uses the same names as jaxlib will
-once the PR merges.  Once it does, this module can be replaced by a straight
-import from jax._src.lax.linalg.
+Registers the ormqr primitive using JAX's XLA FFI, backed by LAPACK
+(dormqr/sormqr/cunmqr/zunmqr) on CPU and cuSOLVER on GPU.  The LAPACK
+FFI targets are registered from jaxtra's C extension (_jaxtra.so);
+the GPU targets from _jaxtra_cuda.so when present.
 """
 from __future__ import annotations
 
