@@ -11,7 +11,8 @@ import jax.scipy.linalg
 
 jax.config.update("jax_enable_x64", True)
 
-from jaxtra.lax.linalg import geqrf, householder_product, ormqr
+from jax._src.lax.linalg import geqrf, householder_product
+from jaxtra._src.lax.linalg import ormqr
 from jaxtra.scipy.linalg import qr_multiply
 
 RNG = np.random.default_rng(42)

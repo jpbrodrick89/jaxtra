@@ -1,5 +1,5 @@
 """
-jaxtra._core — ormqr JAX primitive.
+jaxtra._src.lax.linalg — ormqr JAX primitive.
 
 Registers the ormqr primitive using JAX's XLA FFI, backed by LAPACK
 (dormqr/sormqr/cunmqr/zunmqr) on CPU and cuSOLVER on GPU.  The LAPACK
@@ -7,11 +7,6 @@ FFI targets are registered from jaxtra's C extension (_jaxtra.so);
 the GPU targets from _jaxtra_cuda.so when present.
 """
 from __future__ import annotations
-
-import os
-import glob
-import importlib.util
-import sys
 
 import numpy as np
 
@@ -22,78 +17,23 @@ from jax._src.interpreters import mlir
 from jax._src.lax.linalg import (
     standard_linalg_primitive,
     register_cpu_gpu_lowering,
+    register_module_custom_calls,
     _linalg_ffi_lowering,
     _float,
     _complex,
     _tril,
 )
-from jaxlib import lapack
 from jax._src.typing import ArrayLike, Array
 
+from jaxtra._src.lib import lapack, gpu_solver
+
 
 # ---------------------------------------------------------------------------
-# Register FFI targets from the C extension
-# (same target names as jaxlib will expose once PR #35104 merges)
+# Register FFI targets (mirrors jax._src.lax.linalg's pattern)
 # ---------------------------------------------------------------------------
 
-def _load_extension():
-    mod_name = "jaxtra._jaxtra"
-    if mod_name in sys.modules:
-        return sys.modules[mod_name]
-    here = os.path.dirname(__file__)
-    candidates = []
-    for d in (here, os.path.dirname(here)):
-        candidates.extend(glob.glob(os.path.join(d, "_jaxtra*.so")))
-    if not candidates:
-        raise ImportError(
-            "jaxtra C extension (_jaxtra.so) not found. "
-            "Build it with:  pip install -e . --no-build-isolation"
-        )
-    spec = importlib.util.spec_from_file_location(mod_name, candidates[0])
-    ext = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = ext
-    spec.loader.exec_module(ext)
-    return ext
-
-
-import jax.ffi as ffi
-
-_jaxtra = _load_extension()
-_jaxtra.initialize()
-for _platform, _targets in _jaxtra.registrations().items():
-    for _name, _capsule, _api_version in _targets:
-        ffi.register_ffi_target(
-            _name, _capsule, platform=_platform, api_version=_api_version
-        )
-
-# GPU registration: load _jaxtra_cuda if available (auto-built when CUDA toolkit is present).
-# Mirrors how jaxlib registers GPU targets: the GPU extension exposes
-# registrations() returning {platform: [(name, capsule, api_version)]}.
-# _ormqr_cpu_gpu_lowering already routes GPU calls to "cusolver_ormqr_ffi";
-# this block makes that target available when the CUDA extension is present.
-def _load_gpu_extension():
-    mod_name = "jaxtra._jaxtra_cuda"
-    if mod_name in sys.modules:
-        return sys.modules[mod_name]
-    here = os.path.dirname(__file__)
-    candidates = []
-    for d in (here, os.path.dirname(here)):
-        candidates.extend(glob.glob(os.path.join(d, "_jaxtra_cuda*.so")))
-    if not candidates:
-        return None
-    spec = importlib.util.spec_from_file_location(mod_name, candidates[0])
-    ext = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = ext
-    spec.loader.exec_module(ext)
-    return ext
-
-_jaxtra_cuda = _load_gpu_extension()
-if _jaxtra_cuda is not None:
-    for _platform, _targets in _jaxtra_cuda.registrations().items():
-        for _name, _capsule, _api_version in _targets:
-            ffi.register_ffi_target(
-                _name, _capsule, platform=_platform, api_version=_api_version
-            )
+register_module_custom_calls(lapack)
+register_module_custom_calls(gpu_solver)
 
 
 # ---------------------------------------------------------------------------

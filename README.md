@@ -41,9 +41,9 @@ x = jsl.solve_triangular(R, Qtb)
 
 ### LAPACK routines exposed
 
-| Routine                    | Description                                                                                     | Primitive            |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------- |
-| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._core.ormqr` |
+| Routine                    | Description                                                                                     | Primitive                      |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------ |
+| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._src.lax.linalg.ormqr` |
 
 ---
 
@@ -84,14 +84,6 @@ Requirements: CUDA ≥ 11.x, cuSolver, Abseil (fetched automatically via CMake `
 
 ### Public API
 
-#### `jaxtra.lax.linalg`
-
-Mirrors the `jax.lax.linalg` naming convention.
-
-| Symbol  | Description                                                                                       |
-| ------- | ------------------------------------------------------------------------------------------------- |
-| `ormqr` | Apply Q from a compact QR factorisation to a matrix — XLA FFI primitive, JIT/vmap/grad compatible |
-
 #### `jaxtra.scipy.linalg`
 
 Mirrors `jax.scipy.linalg`.
@@ -99,3 +91,7 @@ Mirrors `jax.scipy.linalg`.
 | Symbol        | Description                                                                              |
 | ------------- | ---------------------------------------------------------------------------------------- |
 | `qr_multiply` | Combined QR decomposition and Q-multiply in one step; mirrors `scipy.linalg.qr_multiply` |
+
+The underlying `ormqr` primitive is accessible at `jaxtra._src.lax.linalg.ormqr`
+for users who need to apply Q directly (same convention as reaching into
+`jax._src.lax.linalg` for primitives not yet in the public API).

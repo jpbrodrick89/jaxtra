@@ -20,8 +20,8 @@ jaxtra is deliberately written to mirror the structure of jaxlib. The kernel cod
 | GPU vendor abstraction                    | `csrc/gpu/jaxlib/gpu/vendor.h` (bundled copy)                                              | `jaxlib/gpu/vendor.h`                                                            |
 | GPU module registration                   | `csrc/jaxtra_cuda_module.cc`                                                               | Added to `jaxlib/gpu/solver.cc` + `jaxlib/gpu/gpu_kernels.cc`                    |
 | GPU helper dependencies                   | Bundled in `csrc/gpu/jaxlib/` (`ffi_helpers.h`, `handle_pool.h`, etc.)                     | Internal jaxlib headers already in scope                                         |
-| FFI target registration                   | `_core.py` `_load_extension()` / `_load_gpu_extension()` blocks                            | Done inside jaxlib at import time; omit entirely                                 |
-| JAX primitive                             | `jaxtra/_core.py`                                                                          | `jax/_src/lax/linalg.py`                                                         |
+| FFI target registration                   | `jaxtra/_src/lib/lapack.py`, `jaxtra/_src/lib/gpu_solver.py` (jaxtra scaffolding only)     | Done inside jaxlib at import time; omit entirely                                 |
+| JAX primitive                             | `jaxtra/_src/lax/linalg.py`                                                                | `jax/_src/lax/linalg.py`                                                         |
 | scipy-level public API                    | `jaxtra/scipy/linalg.py`                                                                   | `jax/_src/scipy/linalg.py` + re-export in `jax/scipy/linalg.py`                  |
 
 ---
@@ -170,7 +170,7 @@ If the build fails on a C++ error, the Bazel output will include the file and li
 
 ### 4a. `jax/_src/lax/linalg.py`
 
-Copy the following from `jaxtra/_core.py` verbatim into `jax/_src/lax/linalg.py`:
+Copy the following from `jaxtra/_src/lax/linalg.py` verbatim into `jax/_src/lax/linalg.py`:
 
 - The public function(s) for the routine
 - The shape rule (`_<routine>_shape_rule`)
@@ -180,10 +180,16 @@ Copy the following from `jaxtra/_core.py` verbatim into `jax/_src/lax/linalg.py`
 
 **Remove entirely:**
 
-- The `_load_extension()` function and everything that calls it — jaxlib loads the C extension automatically.
-- The `ffi.register_ffi_target()` loop — jaxlib handles registration internally via `GetLapackKernelsFromScipy()`.
+- The `register_module_custom_calls(lapack)` / `register_module_custom_calls(gpu_solver)`
+  calls and the `from jaxtra._src.lib import lapack, gpu_solver` import — jaxlib
+  already calls `register_module_custom_calls` for its own modules at import time.
+- The `from jaxtra._src.lib import lapack` import in `_ormqr_cpu_gpu_lowering` —
+  replace with the `lapack` module already in scope in `jax/_src/lax/linalg.py`
+  (imported from `jaxlib`).
 
-No import changes are needed. `_core.py` already imports from `jax._src.lax.linalg` (its destination file), `jax._src.lax.lax`, etc. — the same paths used throughout `linalg.py`.
+No other import changes are needed. `_src/lax/linalg.py` already imports from
+`jax._src.lax.linalg` (its destination file), `jax._src.lax.lax`, etc. — the
+same paths used throughout `linalg.py`.
 
 Add the new public names to `__all__` at the top of the file.
 
@@ -191,7 +197,7 @@ Add the new public names to `__all__` at the top of the file.
 
 ### 4b. `jax/_src/scipy/linalg.py` (if the routine has a scipy-level wrapper)
 
-Copy the wrapper from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. Update imports to point at `jax._src.lax.linalg` rather than `jaxtra._core`. Add the new symbol to the re-export list in `jax/scipy/linalg.py`.
+Copy the wrapper from `jaxtra/scipy/linalg.py` into `jax/_src/scipy/linalg.py`. Update imports to point at `jax._src.lax.linalg` rather than `jaxtra._src.lax.linalg`. Add the new symbol to the re-export list in `jax/scipy/linalg.py`.
 
 ---
 
@@ -201,7 +207,7 @@ Copy the relevant test file(s) from `tests/` into `tests/` inside the JAX repo. 
 
 ```python
 # Before (jaxtra)
-from jaxtra import <routine>
+from jaxtra._src.lax.linalg import <routine>
 import jaxtra.scipy.linalg as jsla
 
 # After (JAX)
@@ -246,11 +252,11 @@ The parametrised dtype/shape/JIT/vmap coverage in the jaxtra test suite is suffi
 
 **Python / tests**
 
-| jaxtra                                    | JAX / jaxlib                                       | Changes required                                                                |
-| ----------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `jaxtra/_core.py` (primitive + lowerings) | `jax/_src/lax/linalg.py`                           | Drop `_load_extension` and `_load_gpu_extension` blocks; add names to `__all__` |
-| `jaxtra/scipy/linalg.py` (`qr_multiply`)  | `jax/_src/scipy/linalg.py` + `jax/scipy/linalg.py` | Update imports; add to re-export list                                           |
-| `tests/test_ormqr.py`                     | `tests/lax_scipy_linalg_test.py` (or new file)     | Update imports                                                                  |
+| jaxtra                                              | JAX / jaxlib                                       | Changes required                                                                                              |
+| --------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `jaxtra/_src/lax/linalg.py` (primitive + lowerings) | `jax/_src/lax/linalg.py`                           | Drop `register_module_custom_calls` calls + lib imports; use jaxlib's `lapack` module; add names to `__all__` |
+| `jaxtra/scipy/linalg.py` (`qr_multiply`)            | `jax/_src/scipy/linalg.py` + `jax/scipy/linalg.py` | Update imports; add to re-export list                                                                         |
+| `tests/test_ormqr.py`                               | `tests/lax_scipy_linalg_test.py` (or new file)     | Update imports                                                                                                |
 
 ### Step 1c detail — `cpu_kernels.cc` additions
 

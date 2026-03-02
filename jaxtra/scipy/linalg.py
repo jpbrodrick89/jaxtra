@@ -15,7 +15,7 @@ from jax._src.numpy.util import promote_dtypes_inexact
 from jax._src.typing import Array, ArrayLike
 from jax._src.lax.linalg import geqrf, geqp3
 
-from jaxtra._core import ormqr
+from jaxtra._src.lax.linalg import ormqr
 
 __all__ = ["qr_multiply"]
 

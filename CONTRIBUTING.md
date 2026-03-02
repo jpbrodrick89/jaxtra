@@ -1,13 +1,14 @@
 # Contributing to jaxtra
 
 jaxtra bridges the gap between JAX and LAPACK routines that are not yet in
-jaxlib proper. Each exposed routine has four layers:
+jaxlib proper. Each exposed routine has three layers, plus an optional fourth:
 
 1. **C++ kernel** — a typed XLA FFI handler that calls LAPACK (CPU) or cuSolver (GPU).
 2. **Module registration** — exposes the handlers to Python as FFI capsules.
 3. **Python primitive** — a JAX `Primitive` with shape rule, Python fallback
    lowering, and CPU/GPU FFI lowering.
-4. **Public API** — the user-facing Python function and its re-exports.
+4. **scipy wrapper** _(optional)_ — a high-level function in
+   `jaxtra/scipy/linalg.py` that mirrors `jax.scipy.linalg`.
 
 The sections below walk through each layer in the order you will touch them
 when adding a new routine from scratch.
@@ -35,8 +36,12 @@ csrc/
         solver_kernels_ffi.h/cc   OrmqrFfi XLA FFI handler
 CMakeLists.txt              build system (auto-detects CUDA; JAXTRA_CUDA env var overrides)
 jaxtra/
-  _core.py                  JAX primitives + lowerings (CPU and GPU)
-  lax/linalg.py             jaxtra.lax.linalg public API
+  _src/
+    lib/
+      lapack.py             CPU extension wrapper (registrations, prepare_lapack_call)
+      gpu_solver.py         GPU extension wrapper (registrations)
+    lax/
+      linalg.py             JAX primitives + lowerings (CPU and GPU)
   scipy/linalg.py           jaxtra.scipy.linalg public API
 tests/
   test_ormqr.py             pytest test suite
@@ -285,10 +290,10 @@ python -c "import jaxtra"
 
 ---
 
-## 3. Python primitive (`jaxtra/_core.py`)
+## 3. Python primitive (`jaxtra/_src/lax/linalg.py`)
 
-Each routine needs four things in `_core.py`: a public function, a shape rule,
-a Python fallback lowering, and a CPU/GPU FFI lowering.
+Each routine needs four things in `_src/lax/linalg.py`: a public function,
+a shape rule, a Python fallback lowering, and a CPU/GPU FFI lowering.
 
 ### 3a. Shape rule
 
@@ -377,19 +382,15 @@ def mynew(arg1: ArrayLike, arg2: ArrayLike, *, attr: bool = True) -> Array:
 
 ---
 
-## 4. Public API (`jaxtra/lax/linalg.py`)
+## 4. scipy wrapper (`jaxtra/scipy/linalg.py`, optional)
 
-Re-export the new function and primitive from `jaxtra.lax.linalg`:
+If your routine mirrors a `jax.scipy.linalg` function, add a wrapper here
+with the full SciPy-compatible signature (handling 1-D inputs, mode strings,
+overwrite flags, etc.) and import the primitive from `jaxtra._src.lax.linalg`:
 
 ```python
-from jaxtra._core import mynew, mynew_p  # noqa: F401
-
-__all__ = [..., "mynew", "mynew_p"]
+from jaxtra._src.lax.linalg import mynew
 ```
-
-If your function mirrors a `jax.scipy.linalg` routine, add it to
-`jaxtra/scipy/linalg.py` with the full SciPy-compatible signature (handling
-1-D inputs, mode strings, overwrite flags, etc.).
 
 ---
 
@@ -432,8 +433,7 @@ pytest tests/ -v
 | Add macro, `initialize()` assignments, `registrations()` entries           | `csrc/jaxtra_module.cc`                  |
 | Add new `.cc` source if needed                                             | `CMakeLists.txt`                         |
 | Rebuild: `pip install -e . --no-build-isolation`                           | —                                        |
-| Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_core.py`                        |
-| Re-export                                                                  | `jaxtra/lax/linalg.py`                   |
+| Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_src/lax/linalg.py`              |
 | High-level wrapper                                                         | `jaxtra/scipy/linalg.py` (if applicable) |
 | Parametrized correctness + JIT + vmap tests                                | `tests/`                                 |
 
@@ -448,4 +448,4 @@ pytest tests/ -v
 | Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc` |
 | Register GPU target in `registrations()`                                           | `csrc/jaxtra_cuda_module.cc`                |
 | Rebuild: `pip install -e ".[gpu]" --no-build-isolation`                            | —                                           |
-| GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_core.py`                           |
+| GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`                 |

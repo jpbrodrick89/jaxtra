@@ -3,12 +3,11 @@
 ## What this repo is
 
 jaxtra exposes missing LAPACK routines as proper JAX primitives via XLA's
-Foreign Function Interface. Currently: **`ormqr`** (orthogonal QR multiply),
-exposed at two levels:
+Foreign Function Interface. Currently: **`ormqr`** (orthogonal QR multiply).
 
-- `jaxtra.lax.linalg.ormqr` — low-level primitive, mirrors `jax.lax.linalg`
-- `jaxtra.scipy.linalg.qr_multiply` — high-level wrapper, mirrors
-  `jax.scipy.linalg`
+Public entry point: `jaxtra.scipy.linalg.qr_multiply` (mirrors `jax.scipy.linalg`).
+Power-user primitive: `from jaxtra._src.lax.linalg import ormqr` (same pattern
+as reaching into `jax._src.lax.linalg` directly).
 
 See **README.md** (Quick start, Installation, API overview) for user-facing
 documentation. The canonical usage pattern (least-squares via QR) is in the
@@ -16,16 +15,17 @@ Quick start section.
 
 ---
 
-## Architecture (four layers, one file each)
+## Architecture (four layers)
 
-| Layer               | File(s)                                          | What lives here                                                                              |
-| ------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| C++ kernel          | `csrc/lapack_kernels.{h,cc}`                     | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop         |
-| Module registration | `csrc/jaxtra_module.cc`                          | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()` |
-| JAX primitive       | `jaxtra/_core.py`                                | `ormqr_p`, shape rule, Python fallback lowering, CPU/GPU FFI lowering                        |
-| Public API          | `jaxtra/lax/linalg.py`, `jaxtra/scipy/linalg.py` | Re-exports + `qr_multiply` wrapper                                                           |
+| Layer               | File(s)                                                      | What lives here                                                                                             |
+| ------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| C++ kernel          | `csrc/lapack_kernels.{h,cc}`                                 | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop                        |
+| Module registration | `csrc/jaxtra_module.cc`                                      | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()`                |
+| Lib wrappers        | `jaxtra/_src/lib/lapack.py`, `jaxtra/_src/lib/gpu_solver.py` | Extension loading, `registrations()`, `batch_partitionable_targets()`, `prepare_lapack_call()`              |
+| JAX primitive       | `jaxtra/_src/lax/linalg.py`                                  | `ormqr_p`, shape rule, Python fallback lowering, CPU/GPU FFI lowering, `register_module_custom_calls` calls |
+| Public API          | `jaxtra/scipy/linalg.py`                                     | `qr_multiply` wrapper                                                                                       |
 
-GPU path mirrors the same four layers under `csrc/gpu/` and
+GPU path mirrors the same C++ layers under `csrc/gpu/` and
 `csrc/jaxtra_cuda_module.cc`.
 
 ---
@@ -62,14 +62,14 @@ submitting to the JAX monorepo and is not relevant to normal development.
 
 ### Python fallback lowering — platform fallback, not grad/vmap
 
-`_ormqr_lowering` in `_core.py` is registered as the **default** MLIR
+`_ormqr_lowering` in `_src/lax/linalg.py` is registered as the **default** MLIR
 lowering (all platforms). The CPU and GPU FFI lowerings override it on those
 platforms. It runs on platforms with no registered FFI target (e.g. TPU, or
 when the `.so` is absent). It is **not** the vmap path — batching is handled
 by `standard_linalg_primitive`'s built-in batching rule plus the C++ kernel's
 batch loop. Do not remove it.
 
-### Private JAX imports in `_core.py`
+### Private JAX imports in `_src/lax/linalg.py`
 
 The Python fallback lowering uses `from jax._src.lax import lax` (internal),
 not `from jax import lax` (public). This is necessary to access private

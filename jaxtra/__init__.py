@@ -4,20 +4,16 @@ Registers XLA FFI kernels as proper JAX primitives — JIT, vmap, and grad
 compatible — backed by LAPACK (CPU) and cuSOLVER (GPU).
 
 Currently exposed:
-  • ``ormqr`` — apply Q (or Qᵀ/Qᴴ) from a compact Householder QR to a
-                matrix **without forming Q**, backed by LAPACK
-                dormqr/sormqr/cunmqr/zunmqr.
+  • ``qr_multiply`` — combined QR decomposition + Q-multiply, backed by LAPACK
+                      dormqr/sormqr/cunmqr/zunmqr, available at
+                      ``jaxtra.scipy.linalg.qr_multiply``.
 
 Quick start
 -----------
 >>> import jax.numpy as jnp
->>> from jax._src.lax.linalg import geqrf
->>> from jaxtra import ormqr
+>>> import jaxtra.scipy.linalg as jsla
 >>>
->>> A = jnp.array([[1,2],[3,4],[5,6]], dtype=jnp.float64)
->>> b = jnp.ones((3, 1), dtype=jnp.float64)
->>> H, taus = geqrf(A)            # compact QR
->>> Qtb = ormqr(H, taus, b, left=True, transpose=True)   # Qᵀ @ b, no Q formed
+>>> A = jnp.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
+>>> b = jnp.array([2., 4., 5., 4.])
+>>> Qtb, R = jsla.qr_multiply(A, b, mode='right')
 """
-
-from jaxtra._core import ormqr  # noqa: F401
