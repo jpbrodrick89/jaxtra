@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR so pushes don't queue up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Pre-commit hooks (ruff, prettier, end-of-file-fixer, …) ──────────────
+  pre-commit:
+    name: Pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pre-commit/action@v3.0.1
+
+  # ── Build + full test suite via uv ───────────────────────────────────────
+  test:
+    name: Tests (uv · Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-caching: true
+          python-version: ${{ matrix.python-version }}
+      # --no-build-isolation lets the build see jax (needed for include_dir())
+      # which uv has already installed from the lockfile before building jaxtra.
+      - name: Install (build + runtime + test deps)
+        run: uv sync --no-build-isolation --extra test
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+  # ── Build + import smoke-test via plain pip (no uv) ──────────────────────
+  install-pip:
+    name: Install (pip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install build dependencies
+        run: pip install jax jaxlib nanobind scikit-build-core numpy
+      - name: Build and install
+        run: pip install --no-build-isolation .
+      - name: Import smoke-test
+        run: python -c "from jaxtra.scipy.linalg import qr_multiply; print('ok')"
+
+  # ── Sphinx docs build (conf.py stubs the C extension — no .so needed) ────
+  docs:
+    name: Docs (Sphinx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install docs dependencies
+        run: pip install -r docs/requirements.txt
+      - name: Build docs
+        run: sphinx-build -W --keep-going -b html docs docs/_build/html
