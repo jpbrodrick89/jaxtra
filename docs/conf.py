@@ -40,8 +40,7 @@ extensions = [
 
 autosummary_generate = True
 
-# Support both Google-style (ormqr, qr_multiply) and NumPy-style
-# (ormqr_lapack) docstrings.
+# Support Google-style docstrings (used throughout the package).
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 napoleon_use_param = True
