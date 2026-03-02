@@ -41,8 +41,8 @@ x = jsl.solve_triangular(R, Qtb)
 
 ### LAPACK routines exposed
 
-| Routine | Description | Primitive |
-|---------|-------------|-----------|
+| Routine                    | Description                                                                                     | Primitive            |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------- |
 | `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._core.ormqr` |
 
 ---
@@ -51,11 +51,11 @@ x = jsl.solve_triangular(R, Qtb)
 
 Each primitive dispatches to the fastest available backend automatically:
 
-| Platform | Backend | Target name |
-|----------|---------|-------------|
-| CPU | LAPACK via SciPy (no link-time dependency) | `lapack_?ormqr_ffi` |
-| CUDA GPU | cuSolver `cusolverDn?ormqr` | `cusolver_ormqr_ffi` |
-| Fallback (grad / vmap / other) | Pure JAX Householder loop | _(no FFI target)_ |
+| Platform                       | Backend                                    | Target name          |
+| ------------------------------ | ------------------------------------------ | -------------------- |
+| CPU                            | LAPACK via SciPy (no link-time dependency) | `lapack_?ormqr_ffi`  |
+| CUDA GPU                       | cuSolver `cusolverDn?ormqr`                | `cusolver_ormqr_ffi` |
+| Fallback (grad / vmap / other) | Pure JAX Householder loop                  | _(no FFI target)_    |
 
 ---
 
@@ -88,14 +88,14 @@ Requirements: CUDA ≥ 11.x, cuSolver, Abseil (fetched automatically via CMake `
 
 Mirrors the `jax.lax.linalg` naming convention.
 
-| Symbol | Description |
-|--------|-------------|
+| Symbol  | Description                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------- |
 | `ormqr` | Apply Q from a compact QR factorisation to a matrix — XLA FFI primitive, JIT/vmap/grad compatible |
 
 #### `jaxtra.scipy.linalg`
 
 Mirrors `jax.scipy.linalg`.
 
-| Symbol | Description |
-|--------|-------------|
+| Symbol        | Description                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------- |
 | `qr_multiply` | Combined QR decomposition and Q-multiply in one step; mirrors `scipy.linalg.qr_multiply` |

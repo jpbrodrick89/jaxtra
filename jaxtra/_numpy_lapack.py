@@ -172,7 +172,6 @@ def ormqr_lapack(
         raise ValueError(f"'c' must have at least 2 dimensions, got shape {c.shape}")
 
     m = a.shape[-2]  # rows of the Householder matrix
-    k = tau.shape[-1]
 
     if left and c.shape[-2] != m:
         raise ValueError(
