@@ -129,6 +129,8 @@ if(_jaxtra_cuda_build)
     csrc/gpu/jaxlib/gpu/solver_interface.cc
     csrc/gpu/jaxlib/gpu/gpu_kernel_helpers.cc
     csrc/gpu/jaxlib/gpu/solver_handle_pool.cc
+    csrc/gpu/jaxlib/gpu/sparse_kernels_ffi.cc
+    csrc/gpu/jaxlib/gpu/sparse_handle_pool.cc
   )
 
   target_compile_definitions(_jaxtra_cuda PRIVATE JAX_GPU_CUDA)
@@ -146,6 +148,7 @@ if(_jaxtra_cuda_build)
 
   target_link_libraries(_jaxtra_cuda PRIVATE
     CUDA::cusolver
+    CUDA::cusparse
     absl::status
     absl::statusor
     absl::str_format
