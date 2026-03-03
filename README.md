@@ -47,18 +47,6 @@ x = jsl.solve_triangular(R, Qtb)
 
 ---
 
-### Backend dispatch
-
-Each primitive dispatches to the fastest available backend automatically:
-
-| Platform                       | Backend                                    | Target name          |
-| ------------------------------ | ------------------------------------------ | -------------------- |
-| CPU                            | LAPACK via SciPy (no link-time dependency) | `lapack_?ormqr_ffi`  |
-| CUDA GPU                       | cuSolver `cusolverDn?ormqr`                | `cusolver_ormqr_ffi` |
-| Fallback (grad / vmap / other) | Pure JAX Householder loop                  | _(no FFI target)_    |
-
----
-
 ## GPU support
 
 Install with the `[gpu]` extra to pull in the NVIDIA runtime libraries and build the cuSolver extension:
