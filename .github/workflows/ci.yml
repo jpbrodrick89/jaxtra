@@ -37,8 +37,11 @@ jobs:
         with:
           enable-caching: true
           python-version: ${{ matrix.python-version }}
-      # --no-build-isolation lets the build see jax (needed for include_dir())
-      # which uv has already installed from the lockfile before building jaxtra.
+      # Pre-install build tools so they are available when uv builds jaxtra.
+      # --no-build-isolation lets the build see the uv-managed jax install
+      # (needed for jax.ffi.include_dir()) without downloading jaxlib twice.
+      - name: Install build tools
+        run: uv pip install "scikit-build-core>=0.9" "nanobind>=2.0"
       - name: Install (build + runtime + test deps)
         run: uv sync --no-build-isolation --extra test
       - name: Run tests
