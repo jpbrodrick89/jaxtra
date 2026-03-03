@@ -190,7 +190,10 @@ for n in SIZES:
     b_j   = jnp.array(b_np)
     A_j   = jnp.array(A_dense)
 
-    t_jaxtra    = time_jax_fn(_jaxtra_solve, ds_j, dl_j, d_j, du_j, dw_j, b_j,
+    # pentadiagonal_solve requires rank-2 RHS (n, k)
+    b_j_2d = b_j[:, None]
+
+    t_jaxtra    = time_jax_fn(_jaxtra_solve, ds_j, dl_j, d_j, du_j, dw_j, b_j_2d,
                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_dense     = time_jax_fn(_dense_solve, A_j, b_j,
                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
