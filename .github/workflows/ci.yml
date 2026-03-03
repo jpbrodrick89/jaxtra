@@ -41,7 +41,7 @@ jobs:
       # --no-build-isolation lets the build see the uv-managed jax install
       # (needed for jax.ffi.include_dir()) without downloading jaxlib twice.
       - name: Install build tools
-        run: uv pip install "scikit-build-core>=0.9" "nanobind>=2.0"
+        run: uv pip install "scikit-build-core>=0.9" "nanobind>=2.0" jax jaxlib
       - name: Install (build + runtime + test deps)
         run: uv sync --no-build-isolation --extra test
       - name: Run tests
