@@ -1,11 +1,26 @@
 """
-Benchmark: jaxtra ORMQR vs dense QR vs scipy lstsq (SVD)
-=========================================================
-For an overdetermined system A @ x ≈ b:
+Benchmark: jaxtra ORMQR vs dense QR vs scipy gelsy vs JAX lstsq
+================================================================
+For an overdetermined system A @ x ≈ b where b is a 1-D vector (single RHS):
 
-  jaxtra   : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
-  dense QR : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
-  scipy    : scipy.linalg.lstsq  (SVD-based, NumPy arrays)
+  jaxtra (ORMQR) : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
+  dense QR       : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
+  scipy gelsy    : scipy.linalg.lstsq(lapack_driver='gelsy')          (QR-based)
+  JAX lstsq      : jnp.linalg.lstsq                                   (SVD-based)
+
+All benchmarks use a single right-hand side (b is always a 1-D vector of length
+n_rows).  The three subplot titles label the number of matrix columns (n_cols),
+i.e. the number of unknowns in the least-squares problem.
+
+Performance note
+----------------
+jaxtra avoids materialising Q entirely; its Q-apply cost is O(m * n_cols).
+Dense QR must first form Q via dorgqr at O(m * n_cols^2) cost, then apply it.
+As a result, jaxtra's advantage over dense QR grows with n_cols (matrix columns):
+with few columns the Q-formation cost is small and dense QR can be competitive,
+but with more columns the O(m * n_cols^2) term dominates and jaxtra pulls ahead.
+This has nothing to do with the number of RHS columns (always 1 here); the
+relevant dimension is n_cols (columns of A).
 
 Results are written to  benchmarks/results/bench_least_squares.csv
 Plots are written to    benchmarks/results/bench_cols{20,50,100}.png
@@ -50,9 +65,16 @@ def _dense_qr_solve(A, b):
     return jsl.solve_triangular(R, Qtb)
 
 
-def _scipy_svd_solve(A_np, b_np):
-    """Least-squares via scipy.linalg.lstsq (SVD)."""
-    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np)
+@jax.jit
+def _jax_lstsq_solve(A, b):
+    """Least-squares via jnp.linalg.lstsq (SVD-based)."""
+    x, _, _, _ = jnp.linalg.lstsq(A, b)
+    return x
+
+
+def _scipy_gelsy_solve(A_np, b_np):
+    """Least-squares via scipy.linalg.lstsq with gelsy driver (QR-based)."""
+    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np, lapack_driver='gelsy')
     return x
 
 
@@ -98,7 +120,8 @@ RNG = np.random.default_rng(0)
 METHODS = [
     ("jaxtra (ORMQR)", "#1f77b4", "o"),
     ("dense QR",       "#ff7f0e", "s"),
-    ("scipy SVD",      "#2ca02c", "^"),
+    ("scipy gelsy",    "#2ca02c", "^"),
+    ("JAX lstsq",      "#d62728", "D"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,9 +131,9 @@ METHODS = [
 records = []   # list of dicts written to CSV
 
 for n_cols in COL_COUNTS:
-    print(f"\nn_cols = {n_cols}")
+    print(f"\nn_cols = {n_cols}  (matrix columns / unknowns; b is always 1-D)")
     print(f"  {'n_rows':>7}  {'jaxtra (ms)':>12}  {'dense QR (ms)':>14}  "
-          f"{'scipy SVD (ms)':>15}  {'vs QR':>6}  {'vs SVD':>7}")
+          f"{'gelsy (ms)':>11}  {'JAX lstsq (ms)':>15}")
     print("  " + "-" * 68)
 
     for n_rows in ROW_SIZES:
@@ -119,26 +142,29 @@ for n_cols in COL_COUNTS:
         A_jx = jnp.array(A_np)
         b_jx = jnp.array(b_np)
 
-        t_jaxtra = time_jax_fn(_jaxtra_solve,   A_jx, b_jx,
-                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-        t_dense  = time_jax_fn(_dense_qr_solve, A_jx, b_jx,
-                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-        t_scipy  = time_numpy_fn(_scipy_svd_solve, A_np, b_np,
-                                  n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_jaxtra  = time_jax_fn(_jaxtra_solve,    A_jx, b_jx,
+                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_dense   = time_jax_fn(_dense_qr_solve,  A_jx, b_jx,
+                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_gelsy   = time_numpy_fn(_scipy_gelsy_solve, A_np, b_np,
+                                   n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_jlstsq  = time_jax_fn(_jax_lstsq_solve, A_jx, b_jx,
+                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "jaxtra (ORMQR)", "time_ms": t_jaxtra * 1e3})
+                         "method": "jaxtra (ORMQR)", "time_ms": t_jaxtra  * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "dense QR",       "time_ms": t_dense  * 1e3})
+                         "method": "dense QR",        "time_ms": t_dense   * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "scipy SVD",       "time_ms": t_scipy  * 1e3})
+                         "method": "scipy gelsy",     "time_ms": t_gelsy   * 1e3})
+        records.append({"n_rows": n_rows, "n_cols": n_cols,
+                         "method": "JAX lstsq",       "time_ms": t_jlstsq  * 1e3})
 
         print(f"  {n_rows:>7d}  "
               f"{t_jaxtra*1e3:12.2f}  "
               f"{t_dense*1e3:14.2f}  "
-              f"{t_scipy*1e3:15.2f}  "
-              f"{t_dense/t_jaxtra:6.2f}x  "
-              f"{t_scipy/t_jaxtra:6.2f}x")
+              f"{t_gelsy*1e3:11.2f}  "
+              f"{t_jlstsq*1e3:15.2f}")
 
 # ---------------------------------------------------------------------------
 # Write CSV
@@ -170,7 +196,7 @@ for n_cols in COL_COUNTS:
     ax.set_yscale("log")
     ax.set_xlabel("Number of rows (M)", fontsize=12)
     ax.set_ylabel("Time (ms)", fontsize=12)
-    ax.set_title(f"Least-squares solve  —  {n_cols} columns", fontsize=13)
+    ax.set_title(f"Least-squares solve  —  {n_cols} matrix columns, 1 RHS", fontsize=13)
     ax.set_xticks(ROW_SIZES)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
