@@ -128,18 +128,23 @@ ffi::Error PentadiagonalSolve<dtype>::Kernel(
     ffi::Buffer<dtype> ds, ffi::Buffer<dtype> dl, ffi::Buffer<dtype> d,
     ffi::Buffer<dtype> du, ffi::Buffer<dtype> dw, ffi::Buffer<dtype> b,
     ffi::ResultBuffer<dtype> b_out) {
-  // Unpack batch / vector dimensions.
+  // Unpack batch / vector dimensions from diagonals (rank-1 per batch).
   auto d_dims_result = SplitBatch1D(d.dimensions());
   if (d_dims_result.has_error()) return std::move(d_dims_result.error());
   auto [batch_count, n] = *d_dims_result;
 
+  // b has shape (..., n, nrhs) — use SplitBatch2D to extract nrhs.
+  auto b_dims_result = SplitBatch2D(b.dimensions());
+  if (b_dims_result.has_error()) return std::move(b_dims_result.error());
+  auto [b_batch, b_rows, nrhs] = *b_dims_result;
+
   FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n));
+  FFI_ASSIGN_OR_RETURN(auto nrhs_v, MaybeCastNoOverflow<int>(nrhs));
 
   // LAPACK band storage parameters for pentadiagonal (KL=KU=2).
   const int kl = 2, ku = 2;
   // LDAB = 2*KL + KU + 1 = 7 (KL extra rows for LU pivoting + band width).
   const int ldab = 2 * kl + ku + 1;  // = 7
-  const int nrhs = 1;
   int ldab_v = ldab;
   int ldb_v = n_v;
 
@@ -181,7 +186,7 @@ ffi::Error PentadiagonalSolve<dtype>::Kernel(
 
     int info = 0;
     fn(&n_v, const_cast<int*>(&kl), const_cast<int*>(&ku),
-       const_cast<int*>(&nrhs), AB.data(), &ldab_v, ipiv.data(),
+       &nrhs_v, AB.data(), &ldab_v, ipiv.data(),
        x_data, &ldb_v, &info);
     // info > 0 means singular; follow jaxlib's convention of not raising.
 
@@ -190,7 +195,7 @@ ffi::Error PentadiagonalSolve<dtype>::Kernel(
     d_data  += n;
     du_data += n;
     dw_data += n;
-    x_data  += n;
+    x_data  += n * nrhs;
   }
   return ffi::Error::Success();
 }

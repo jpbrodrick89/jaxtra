@@ -3,8 +3,9 @@
 Covers:
   - Correctness vs numpy LU for random 10×10 pentadiagonal systems.
   - Correctness vs numpy LU for a hyperdiffusion (biharmonic) operator.
+  - Multi-RHS support (rank-2 b).
   - JIT compilation.
-  - Batched execution via vmap.
+  - Batched execution via vmap (all args batched + only-b batched).
   - Forward-mode AD (JVP).
   - Reverse-mode AD (grad).
 """
@@ -35,7 +36,7 @@ def rand(shape, dtype):
     return RNG.standard_normal(shape).astype(dtype)
 
 
-def make_diag_dominant_penta(n, dtype):
+def make_diag_dominant_penta(n, dtype, nrhs=1):
     """Random diagonally dominant pentadiagonal system (guaranteed solvable)."""
     ds = rand(n, dtype) * 0.1
     dl = rand(n, dtype) * 0.2
@@ -46,20 +47,18 @@ def make_diag_dominant_penta(n, dtype):
         d = rand(n, dtype) * 0.5 + 10.0
     du = rand(n, dtype) * 0.2
     dw = rand(n, dtype) * 0.1
-    b  = rand(n, dtype)
+    b  = rand((n, nrhs), dtype)
     return ds, dl, d, du, dw, b
 
 
-def make_hyperdiffusion(n, dtype):
+def make_hyperdiffusion(n, dtype, nrhs=1):
     """SPD biharmonic stencil: [1, -4, 8, -4, 1] (diagonally dominant for safety)."""
-    # Biharmonic fourth-difference operator with a slightly larger main diagonal
-    # to ensure strict diagonal dominance regardless of boundary effects.
     ds = np.ones(n, dtype=dtype)
     dl = np.full(n, -4.0, dtype=dtype)
     d  = np.full(n,  8.0, dtype=dtype)
     du = np.full(n, -4.0, dtype=dtype)
     dw = np.ones(n, dtype=dtype)
-    b  = rand(n, dtype)
+    b  = rand((n, nrhs), dtype)
     return ds, dl, d, du, dw, b
 
 
@@ -125,6 +124,24 @@ def test_hyperdiffusion(dtype):
 
 
 # ---------------------------------------------------------------------------
+# Multi-RHS
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dtype", all_dtypes)
+@pytest.mark.parametrize("nrhs", [1, 3, 7])
+def test_multi_rhs(nrhs, dtype):
+    """pentadiagonal_solve matches numpy LU for multiple RHS columns."""
+    n = 10
+    ds, dl, d, du, dw, b = make_diag_dominant_penta(n, dtype, nrhs=nrhs)
+    x     = pentadiagonal_solve(
+        jnp.array(ds), jnp.array(dl), jnp.array(d),
+        jnp.array(du), jnp.array(dw), jnp.array(b))
+    x_ref = lu_reference(ds, dl, d, du, dw, b)
+    atol = rtol = tol(dtype)
+    np.testing.assert_allclose(np.array(x), x_ref, rtol=rtol, atol=atol)
+
+
+# ---------------------------------------------------------------------------
 # JIT
 # ---------------------------------------------------------------------------
 
@@ -145,20 +162,37 @@ def test_jit():
 
 def test_vmap():
     """Batched pentadiagonal_solve via vmap matches per-sample eager results."""
-    batch, n = 4, 10
+    batch, n, nrhs = 4, 10, 1
     ds_b = jnp.array(rand((batch, n), np.float64))
     dl_b = jnp.array(rand((batch, n), np.float64))
     d_b  = jnp.array(rand((batch, n), np.float64) * 0.5 + 10.0)
     du_b = jnp.array(rand((batch, n), np.float64))
     dw_b = jnp.array(rand((batch, n), np.float64))
-    b_b  = jnp.array(rand((batch, n), np.float64))
+    b_b  = jnp.array(rand((batch, n, nrhs), np.float64))
 
     result = jax.vmap(pentadiagonal_solve)(ds_b, dl_b, d_b, du_b, dw_b, b_b)
-    assert result.shape == (batch, n)
+    assert result.shape == (batch, n, nrhs)
 
     for i in range(batch):
         ref_i = pentadiagonal_solve(ds_b[i], dl_b[i], d_b[i],
                                     du_b[i], dw_b[i], b_b[i])
+        np.testing.assert_allclose(
+            np.array(result[i]), np.array(ref_i), rtol=1e-10, atol=1e-10)
+
+
+def test_vmap_over_b():
+    """vmap with only b batched uses the efficient nrhs-folding path."""
+    n, nrhs = 10, 5
+    ds, dl, d, du, dw, _ = make_diag_dominant_penta(n, np.float64)
+    ds_j, dl_j, d_j, du_j, dw_j = (jnp.array(v) for v in (ds, dl, d, du, dw))
+    b_batch = jnp.array(rand((nrhs, n, 1), np.float64))
+
+    result = jax.vmap(pentadiagonal_solve, in_axes=(None, None, None, None, None, 0))(
+        ds_j, dl_j, d_j, du_j, dw_j, b_batch)
+    assert result.shape == (nrhs, n, 1)
+
+    for i in range(nrhs):
+        ref_i = pentadiagonal_solve(ds_j, dl_j, d_j, du_j, dw_j, b_batch[i])
         np.testing.assert_allclose(
             np.array(result[i]), np.array(ref_i), rtol=1e-10, atol=1e-10)
 
@@ -173,7 +207,7 @@ def test_jvp_wrt_b():
     ds, dl, d, du, dw, b = make_diag_dominant_penta(n, np.float64)
     ds_j, dl_j, d_j, du_j, dw_j, b_j = (jnp.array(v)
                                           for v in (ds, dl, d, du, dw, b))
-    db = jnp.array(rand(n, np.float64))
+    db = jnp.array(rand((n, 1), np.float64))
 
     def solve_b(b_):
         return pentadiagonal_solve(ds_j, dl_j, d_j, du_j, dw_j, b_)
@@ -204,6 +238,24 @@ def test_jvp_wrt_d():
     np.testing.assert_allclose(np.array(tangent), np.array(fd), rtol=1e-5, atol=1e-5)
 
 
+def test_jvp_multi_rhs():
+    """JVP with multi-RHS b matches finite-difference estimate."""
+    n, nrhs = 6, 3
+    ds, dl, d, du, dw, b = make_diag_dominant_penta(n, np.float64, nrhs=nrhs)
+    ds_j, dl_j, d_j, du_j, dw_j, b_j = (jnp.array(v)
+                                          for v in (ds, dl, d, du, dw, b))
+    db = jnp.array(rand((n, nrhs), np.float64))
+
+    def solve_b(b_):
+        return pentadiagonal_solve(ds_j, dl_j, d_j, du_j, dw_j, b_)
+
+    _, tangent = jax.jvp(solve_b, (b_j,), (db,))
+
+    eps = 1e-6
+    fd = (solve_b(b_j + eps * db) - solve_b(b_j - eps * db)) / (2.0 * eps)
+    np.testing.assert_allclose(np.array(tangent), np.array(fd), rtol=1e-5, atol=1e-5)
+
+
 # ---------------------------------------------------------------------------
 # Reverse-mode AD (grad)
 # ---------------------------------------------------------------------------
@@ -223,11 +275,11 @@ def test_grad_wrt_b():
 
     # Finite-difference reference
     eps = 1e-6
-    fd_grad = np.zeros(n)
+    fd_grad = np.zeros((n, 1))
     for k in range(n):
-        e = np.zeros(n, dtype=np.float64)
-        e[k] = eps
-        fd_grad[k] = (loss(b_j + e) - loss(b_j - e)) / (2.0 * eps)
+        e = np.zeros((n, 1), dtype=np.float64)
+        e[k, 0] = eps
+        fd_grad[k, 0] = (loss(b_j + e) - loss(b_j - e)) / (2.0 * eps)
 
     np.testing.assert_allclose(np.array(grad_b), fd_grad, rtol=1e-5, atol=1e-5)
 
@@ -259,3 +311,27 @@ def test_grad_wrt_diagonals():
         np.testing.assert_allclose(
             np.array(g), fd_g, rtol=1e-4, atol=1e-4,
             err_msg=f"gradient mismatch for diagonal arg {arg_idx}")
+
+
+def test_grad_multi_rhs():
+    """jax.grad with multi-RHS b matches finite-difference gradient."""
+    n, nrhs = 6, 3
+    ds, dl, d, du, dw, b = make_diag_dominant_penta(n, np.float64, nrhs=nrhs)
+    ds_j, dl_j, d_j, du_j, dw_j, b_j = (jnp.array(v)
+                                          for v in (ds, dl, d, du, dw, b))
+
+    def loss(b_):
+        x = pentadiagonal_solve(ds_j, dl_j, d_j, du_j, dw_j, b_)
+        return jnp.sum(x ** 2)
+
+    grad_b = jax.grad(loss)(b_j)
+
+    eps = 1e-6
+    fd_grad = np.zeros((n, nrhs))
+    for k in range(n):
+        for j in range(nrhs):
+            e = np.zeros((n, nrhs), dtype=np.float64)
+            e[k, j] = eps
+            fd_grad[k, j] = (loss(b_j + e) - loss(b_j - e)) / (2.0 * eps)
+
+    np.testing.assert_allclose(np.array(grad_b), fd_grad, rtol=1e-5, atol=1e-5)

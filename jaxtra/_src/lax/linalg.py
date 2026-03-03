@@ -8,17 +8,16 @@ when present.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 
 import jax.numpy as jnp
+from jax import ffi as _jax_ffi
 from jax._src import core, dtypes
-try:
-  from jax import ffi as _jax_ffi  # JAX >= 0.4.36 public API
-except ImportError:
-  from jax.extend import ffi as _jax_ffi  # JAX 0.4.27–0.4.35
 from jax._src.lax import lax
 from jax._src.lax import control_flow
-from jax._src.interpreters import mlir, ad
+from jax._src.interpreters import mlir, ad, batching
 from jax._src.lax.linalg import (
     standard_linalg_primitive,
     register_cpu_gpu_lowering,
@@ -172,7 +171,7 @@ register_cpu_gpu_lowering(ormqr_p, _ormqr_cpu_gpu_lowering)
 def pentadiagonal_solve(
     ds: ArrayLike, dl: ArrayLike, d: ArrayLike,
     du: ArrayLike, dw: ArrayLike, b: ArrayLike) -> Array:
-  """Solve a pentadiagonal linear system A x = b.
+  """Solve a pentadiagonal linear system A X = B.
 
   The matrix A is stored as five diagonals following the cuSPARSE
   ``gpsvInterleavedBatch`` convention::
@@ -189,10 +188,20 @@ def pentadiagonal_solve(
     d: Main diagonal of A with shape ``[..., n]``.
     du: First super-diagonal of A with shape ``[..., n]``.
     dw: Second super-diagonal of A with shape ``[..., n]``.
-    b: Right-hand side vector with shape ``[..., n]``.
+    b: Right-hand side matrix with shape ``[..., n, k]``.
 
   Returns:
-    Solution x with the same shape as b.
+    Solution X with the same shape as b.
+
+  Note:
+    On GPU, the solver uses cuSPARSE's interleaved-batch format internally.
+    XLA will transpose inputs automatically if needed, but for best
+    performance with batched inputs (e.g. from ``vmap``), no user action is
+    required — the batching rule and XLA layout mechanism handle this.
+
+    GPU batch-dimension sharding (e.g. ``shard_map`` across the batch axis)
+    is not currently supported; all batch elements must reside on the same
+    device.
   """
   ds, dl, d, du, dw, b = core.standard_insert_pvary(ds, dl, d, du, dw, b)
   return pentadiagonal_solve_p.bind(ds, dl, d, du, dw, b)
@@ -200,43 +209,52 @@ def pentadiagonal_solve(
 
 def _pentadiagonal_solve_shape_rule(
     ds_shape, dl_shape, d_shape, du_shape, dw_shape, b_shape):
-  n = d_shape[0]
-  for name, shape in [("ds", ds_shape), ("dl", dl_shape),
-                      ("du", du_shape), ("dw", dw_shape)]:
-    if shape[0] != n:
-      raise ValueError(
-          f"pentadiagonal_solve: diagonal {name} has shape {shape}, "
-          f"expected shape matching d shape ({n},)")
-  if b_shape[0] != n:
-    raise ValueError(
-        f"pentadiagonal_solve: b has shape {b_shape}, "
-        f"expected leading dim {n} to match d")
+  if not (ds_shape == dl_shape == d_shape == du_shape == dw_shape):
+    raise TypeError(
+        "pentadiagonal_solve requires that all diagonal arguments have the "
+        "same shape, got ds={}, dl={}, d={}, du={}, dw={}".format(
+            ds_shape, dl_shape, d_shape, du_shape, dw_shape))
+  if d_shape != b_shape[:-1]:
+    raise TypeError(
+        "pentadiagonal_solve requires that the leading ndim-1 dimensions of b "
+        "equal the dimensions of the diagonal arguments.")
   return b_shape
 
 
-def _pentadiagonal_solve_cpu_gpu_lowering(
-    ctx, ds, dl, d, du, dw, b, *, target_name_prefix: str):
+def _pentadiagonal_solve_cpu_lowering(ctx, ds, dl, d, du, dw, b, **kwargs):
+  del kwargs
   d_aval = ctx.avals_in[2]
-  if target_name_prefix == "cpu":
-    target_name = lapack.prepare_lapack_call("gbsv_ffi", d_aval.dtype)
-  else:
-    target_name = f"{target_name_prefix}sparse_gpsvInterleaved_ffi"
-  rule = _jax_ffi.ffi_lowering(target_name)
+  target_name = lapack.prepare_lapack_call("gbsv_ffi", d_aval.dtype)
+  rule = _linalg_ffi_lowering(target_name, operand_output_aliases={5: 0})
   return rule(ctx, ds, dl, d, du, dw, b)
 
 
-def _penta_matvec(ds, dl, d, du, dw, v):
-  """Apply the pentadiagonal matrix A to vector v: returns A @ v."""
-  zeros_1 = jnp.zeros_like(v[..., :1])
-  zeros_2 = jnp.zeros_like(v[..., :2])
-  # Row i contribution: ds[i]*v[i-2] + dl[i]*v[i-1] + d[i]*v[i]
-  #                   + du[i]*v[i+1] + dw[i]*v[i+2]
-  out = d * v
-  out = out + jnp.concatenate([zeros_1, dl[..., 1:] * v[..., :-1]], axis=-1)
-  out = out + jnp.concatenate([zeros_2, ds[..., 2:] * v[..., :-2]], axis=-1)
-  out = out + jnp.concatenate([du[..., :-1] * v[..., 1:], zeros_1], axis=-1)
-  out = out + jnp.concatenate([dw[..., :-2] * v[..., 2:], zeros_2], axis=-1)
-  return out
+def _pentadiagonal_solve_gpu_lowering(ctx, ds, dl, d, du, dw, b, *,
+                                       target_name_prefix):
+  target_name = f"{target_name_prefix}sparse_gpsvInterleaved_ffi"
+  # Identity layout (0, 1, ..., ndim-1) in minor-to-major places dim 0
+  # innermost (stride 1).  For shape (batch, n, ...) this yields cuSPARSE's
+  # interleaved-batch format: data[i * batchCount + b].
+  operand_layouts = [tuple(range(len(aval.shape)))
+                     for aval in ctx.avals_in]
+  result_layouts = [tuple(range(len(aval.shape)))
+                    for aval in ctx.avals_out]
+  rule = _jax_ffi.ffi_lowering(
+      target_name,
+      operand_layouts=operand_layouts,
+      result_layouts=result_layouts,
+      operand_output_aliases={5: 0})
+  return rule(ctx, ds, dl, d, du, dw, b)
+
+
+def _pentadiagonal_product(ds, dl, d, du, dw, v):
+  """A @ v where A is pentadiagonal and v is (..., n, k)."""
+  y = lax.reshape(d, d.shape + (1,)) * v
+  y = y.at[..., 1:, :].add(dl[..., 1:, None] * v[..., :-1, :])
+  y = y.at[..., 2:, :].add(ds[..., 2:, None] * v[..., :-2, :])
+  y = y.at[..., :-1, :].add(du[..., :-1, None] * v[..., 1:, :])
+  y = y.at[..., :-2, :].add(dw[..., :-2, None] * v[..., 2:, :])
+  return y
 
 
 def _pentadiagonal_solve_jvp(primals, tangents):
@@ -251,7 +269,7 @@ def _pentadiagonal_solve_jvp(primals, tangents):
   ddu = z(ddu, du); ddw = z(ddw, dw); db = z(db, b)
 
   # Compute dA @ x (matvec of the perturbation matrix applied to x).
-  dAx = _penta_matvec(dds, ddl, dd, ddu, ddw, x)
+  dAx = _pentadiagonal_product(dds, ddl, dd, ddu, ddw, x)
 
   # dx = A^{-1} (db - dA x)
   dx = pentadiagonal_solve_p.bind(ds, dl, d, du, dw, db - dAx)
@@ -268,15 +286,15 @@ def _pentadiagonal_solve_transpose(ct, ds, dl, d, du, dw, b):
   #   (A^T)[i, i]   = A[i,   i] = d[i]      (main of A^T)
   #   (A^T)[i, i+1] = A[i+1, i] = dl[i+1]  (upper-1 of A^T)
   #   (A^T)[i, i+2] = A[i+2, i] = ds[i+2]  (upper-2 of A^T)
-  zeros_1 = jnp.zeros(d.shape[:-1] + (1,), dtype=d.dtype)
-  zeros_2 = jnp.zeros(d.shape[:-1] + (2,), dtype=d.dtype)
+  zeros_1 = lax.full_like(d, 0, shape=d.shape[:-1] + (1,))
+  zeros_2 = lax.full_like(d, 0, shape=d.shape[:-1] + (2,))
 
   # Build A^T diagonals.
-  ds_T = jnp.concatenate([zeros_2, dw[..., :-2]], axis=-1)   # lower-2
-  dl_T = jnp.concatenate([zeros_1, du[..., :-1]], axis=-1)   # lower-1
-  d_T = d                                                      # main
-  du_T = jnp.concatenate([dl[..., 1:], zeros_1], axis=-1)    # upper-1
-  dw_T = jnp.concatenate([ds[..., 2:], zeros_2], axis=-1)    # upper-2
+  ds_T = lax.concatenate([zeros_2, dw[..., :-2]], dimension=len(d.shape) - 1)
+  dl_T = lax.concatenate([zeros_1, du[..., :-1]], dimension=len(d.shape) - 1)
+  d_T = d
+  du_T = lax.concatenate([dl[..., 1:], zeros_1], dimension=len(d.shape) - 1)
+  dw_T = lax.concatenate([ds[..., 2:], zeros_2], dimension=len(d.shape) - 1)
 
   ct_b = pentadiagonal_solve_p.bind(ds_T, dl_T, d_T, du_T, dw_T, ct)
   return [None, None, None, None, None, ct_b]
@@ -291,11 +309,12 @@ def _pentadiagonal_solve_jax_fallback(ds, dl, d, du, dw, b):
   A = A.at[jnp.arange(2, n), jnp.arange(n - 2)].add(ds[2:])
   A = A.at[jnp.arange(n - 1), jnp.arange(1, n)].add(du[:n - 1])
   A = A.at[jnp.arange(n - 2), jnp.arange(2, n)].add(dw[:n - 2])
+  # b has shape (n, k); jnp.linalg.solve handles matrix RHS natively.
   return jnp.linalg.solve(A, b)
 
 
 pentadiagonal_solve_p = standard_linalg_primitive(
-    (_float | _complex,) * 6, (1, 1, 1, 1, 1, 1),
+    (_float | _complex,) * 6, (1, 1, 1, 1, 1, 2),
     _pentadiagonal_solve_shape_rule, "pentadiagonal_solve")
 
 # Register JVP and transpose rules.
@@ -307,5 +326,33 @@ mlir.register_lowering(pentadiagonal_solve_p, mlir.lower_fun(
     _pentadiagonal_solve_jax_fallback, multiple_results=False))
 
 # Register CPU (LAPACK gbsv) and GPU (cuSPARSE gpsvInterleavedBatch) lowerings.
-register_cpu_gpu_lowering(pentadiagonal_solve_p,
-                          _pentadiagonal_solve_cpu_gpu_lowering)
+mlir.register_lowering(pentadiagonal_solve_p,
+                        _pentadiagonal_solve_cpu_lowering, platform='cpu')
+mlir.register_lowering(pentadiagonal_solve_p,
+                        partial(_pentadiagonal_solve_gpu_lowering,
+                                target_name_prefix='cu'),
+                        platform='cuda')
+
+
+def _pentadiagonal_solve_batching_rule(batched_args, batch_dims):
+  ds, dl, d, du, dw, b = batched_args
+  bds, bdl, bd, bdu, bdw, bb = batch_dims
+  if all(bd is batching.not_mapped for bd in (bds, bdl, bd, bdu, bdw)):
+    b = batching.moveaxis(b, bb, -2)
+    b_flat = b.reshape(b.shape[:-3] + (b.shape[-3], b.shape[-2] * b.shape[-1]))
+    bdim_out = b.ndim - 2
+    out_flat = pentadiagonal_solve(ds, dl, d, du, dw, b_flat)
+    return out_flat.reshape(b.shape), bdim_out
+  else:
+    size = next(t.shape[i] for t, i in zip(batched_args, batch_dims)
+                if i is not None)
+    ds = batching.bdim_at_front(ds, bds, size)
+    dl = batching.bdim_at_front(dl, bdl, size)
+    d  = batching.bdim_at_front(d,  bd,  size)
+    du = batching.bdim_at_front(du, bdu, size)
+    dw = batching.bdim_at_front(dw, bdw, size)
+    b  = batching.bdim_at_front(b,  bb,  size)
+    return pentadiagonal_solve(ds, dl, d, du, dw, b), 0
+
+batching.primitive_batchers[pentadiagonal_solve_p] = (
+    _pentadiagonal_solve_batching_rule)

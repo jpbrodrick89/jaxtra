@@ -15,17 +15,12 @@ limitations under the License.
 
 // XLA FFI handler for cuSPARSE gpsvInterleavedBatch (pentadiagonal solve).
 //
-// gpsvInterleavedBatch API note:
-//   The "interleaved batch" format stores elements as:
-//     data[i * batchCount + j]  for element i of batch j
-//   This differs from the usual "strided" batch layout used by JAX:
-//     data[j * m + i]
+// The Python lowering requests interleaved memory layouts via XLA FFI
+// operand_layouts, so all buffers arrive in the interleaved-batch format
+// expected by gpsvInterleavedBatch:
+//   data[i * batchCount + j]   for element i of batch j
 //
-//   To avoid a device-side transpose (which would require a .cu file with
-//   __global__ kernels), we call gpsvInterleavedBatch with batchCount=1 in a
-//   sequential loop over each batch element.  With batchCount=1 the two
-//   layouts are identical: data[i * 1 + 0] == data[i].  This is correct and
-//   avoids the data-layout mismatch, at the cost of serialising the batch.
+// batchCount is inferred from the diagonal shape via SplitBatch1D.
 
 #include "jaxlib/gpu/sparse_kernels_ffi.h"
 
@@ -53,15 +48,16 @@ namespace ffi = ::xla::ffi;
 // Type-erased dispatch helpers
 // ---------------------------------------------------------------------------
 
-// Buffer size query for a single-system (batchCount=1) gpsvInterleavedBatch.
+// Buffer size query for gpsvInterleavedBatch.
 template <typename T>
 absl::StatusOr<size_t> GpsvBufferSize(gpusparseHandle_t handle, int m,
+                                      int batchCount,
                                       const T* ds, const T* dl, const T* d,
                                       const T* du, const T* dw, const T* x);
 
 template <>
 absl::StatusOr<size_t> GpsvBufferSize<float>(
-    gpusparseHandle_t handle, int m,
+    gpusparseHandle_t handle, int m, int batchCount,
     const float* ds, const float* dl, const float* d,
     const float* du, const float* dw, const float* x) {
   size_t bufSize = 0;
@@ -71,13 +67,13 @@ absl::StatusOr<size_t> GpsvBufferSize<float>(
           const_cast<float*>(ds), const_cast<float*>(dl),
           const_cast<float*>(d),  const_cast<float*>(du),
           const_cast<float*>(dw), const_cast<float*>(x),
-          /*batchCount=*/1, &bufSize)));
+          batchCount, &bufSize)));
   return bufSize;
 }
 
 template <>
 absl::StatusOr<size_t> GpsvBufferSize<double>(
-    gpusparseHandle_t handle, int m,
+    gpusparseHandle_t handle, int m, int batchCount,
     const double* ds, const double* dl, const double* d,
     const double* du, const double* dw, const double* x) {
   size_t bufSize = 0;
@@ -87,13 +83,13 @@ absl::StatusOr<size_t> GpsvBufferSize<double>(
           const_cast<double*>(ds), const_cast<double*>(dl),
           const_cast<double*>(d),  const_cast<double*>(du),
           const_cast<double*>(dw), const_cast<double*>(x),
-          /*batchCount=*/1, &bufSize)));
+          batchCount, &bufSize)));
   return bufSize;
 }
 
 template <>
 absl::StatusOr<size_t> GpsvBufferSize<gpuComplex>(
-    gpusparseHandle_t handle, int m,
+    gpusparseHandle_t handle, int m, int batchCount,
     const gpuComplex* ds, const gpuComplex* dl, const gpuComplex* d,
     const gpuComplex* du, const gpuComplex* dw, const gpuComplex* x) {
   size_t bufSize = 0;
@@ -103,13 +99,13 @@ absl::StatusOr<size_t> GpsvBufferSize<gpuComplex>(
           const_cast<gpuComplex*>(ds), const_cast<gpuComplex*>(dl),
           const_cast<gpuComplex*>(d),  const_cast<gpuComplex*>(du),
           const_cast<gpuComplex*>(dw), const_cast<gpuComplex*>(x),
-          /*batchCount=*/1, &bufSize)));
+          batchCount, &bufSize)));
   return bufSize;
 }
 
 template <>
 absl::StatusOr<size_t> GpsvBufferSize<gpuDoubleComplex>(
-    gpusparseHandle_t handle, int m,
+    gpusparseHandle_t handle, int m, int batchCount,
     const gpuDoubleComplex* ds, const gpuDoubleComplex* dl,
     const gpuDoubleComplex* d,  const gpuDoubleComplex* du,
     const gpuDoubleComplex* dw, const gpuDoubleComplex* x) {
@@ -120,48 +116,49 @@ absl::StatusOr<size_t> GpsvBufferSize<gpuDoubleComplex>(
           const_cast<gpuDoubleComplex*>(ds), const_cast<gpuDoubleComplex*>(dl),
           const_cast<gpuDoubleComplex*>(d),  const_cast<gpuDoubleComplex*>(du),
           const_cast<gpuDoubleComplex*>(dw), const_cast<gpuDoubleComplex*>(x),
-          /*batchCount=*/1, &bufSize)));
+          batchCount, &bufSize)));
   return bufSize;
 }
 
-// Solve single system (batchCount=1).
+// Solve with gpsvInterleavedBatch.
 template <typename T>
-absl::Status GpsvSolve(gpusparseHandle_t handle, int m,
+absl::Status GpsvSolve(gpusparseHandle_t handle, int m, int batchCount,
                        T* ds, T* dl, T* d, T* du, T* dw, T* x, void* buf);
 
 template <>
-absl::Status GpsvSolve<float>(gpusparseHandle_t handle, int m,
+absl::Status GpsvSolve<float>(gpusparseHandle_t handle, int m, int batchCount,
                                float* ds, float* dl, float* d, float* du,
                                float* dw, float* x, void* buf) {
   return JAX_AS_STATUS(gpusparseSgpsvInterleavedBatch(
-      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, /*batchCount=*/1, buf));
+      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, batchCount, buf));
 }
 
 template <>
-absl::Status GpsvSolve<double>(gpusparseHandle_t handle, int m,
+absl::Status GpsvSolve<double>(gpusparseHandle_t handle, int m, int batchCount,
                                 double* ds, double* dl, double* d, double* du,
                                 double* dw, double* x, void* buf) {
   return JAX_AS_STATUS(gpusparseDgpsvInterleavedBatch(
-      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, /*batchCount=*/1, buf));
+      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, batchCount, buf));
 }
 
 template <>
 absl::Status GpsvSolve<gpuComplex>(gpusparseHandle_t handle, int m,
+                                    int batchCount,
                                     gpuComplex* ds, gpuComplex* dl,
                                     gpuComplex* d,  gpuComplex* du,
                                     gpuComplex* dw, gpuComplex* x, void* buf) {
   return JAX_AS_STATUS(gpusparseCgpsvInterleavedBatch(
-      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, /*batchCount=*/1, buf));
+      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, batchCount, buf));
 }
 
 template <>
 absl::Status GpsvSolve<gpuDoubleComplex>(
-    gpusparseHandle_t handle, int m,
+    gpusparseHandle_t handle, int m, int batchCount,
     gpuDoubleComplex* ds, gpuDoubleComplex* dl,
     gpuDoubleComplex* d,  gpuDoubleComplex* du,
     gpuDoubleComplex* dw, gpuDoubleComplex* x, void* buf) {
   return JAX_AS_STATUS(gpusparseZgpsvInterleavedBatch(
-      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, /*batchCount=*/1, buf));
+      handle, /*algo=*/0, m, ds, dl, d, du, dw, x, batchCount, buf));
 }
 
 // ---------------------------------------------------------------------------
@@ -169,17 +166,17 @@ absl::Status GpsvSolve<gpuDoubleComplex>(
 // ---------------------------------------------------------------------------
 
 template <typename T>
-ffi::Error GpsvImpl(int64_t batch, int64_t m, gpuStream_t stream,
+ffi::Error GpsvImpl(int64_t batch, int64_t m, int64_t nrhs,
+                    gpuStream_t stream,
                     ffi::ScratchAllocator& scratch,
                     ffi::AnyBuffer ds, ffi::AnyBuffer dl, ffi::AnyBuffer d,
                     ffi::AnyBuffer du, ffi::AnyBuffer dw, ffi::AnyBuffer b,
                     ffi::Result<ffi::AnyBuffer> out) {
   FFI_ASSIGN_OR_RETURN(auto m_v, MaybeCastNoOverflow<int>(m));
+  FFI_ASSIGN_OR_RETURN(auto batch_v, MaybeCastNoOverflow<int>(batch));
 
   FFI_ASSIGN_OR_RETURN(auto handle, SparseHandlePool::Borrow(stream));
 
-  // Query workspace size once (same for all batch elements).
-  auto ds_ptr = static_cast<const T*>(ds.untyped_data());
   auto x_ptr  = static_cast<T*>(out->untyped_data());
 
   // Copy b -> out if they differ.
@@ -190,31 +187,35 @@ ffi::Error GpsvImpl(int64_t batch, int64_t m, gpuStream_t stream,
   }
 
   FFI_ASSIGN_OR_RETURN(size_t buf_bytes,
-                       GpsvBufferSize<T>(handle.get(), m_v,
-                                         ds_ptr, static_cast<const T*>(dl.untyped_data()),
+                       GpsvBufferSize<T>(handle.get(), m_v, batch_v,
+                                         static_cast<const T*>(ds.untyped_data()),
+                                         static_cast<const T*>(dl.untyped_data()),
                                          static_cast<const T*>(d.untyped_data()),
                                          static_cast<const T*>(du.untyped_data()),
                                          static_cast<const T*>(dw.untyped_data()),
                                          x_ptr));
 
-  // Allocate workspace from XLA scratch allocator (reused across batch).
+  // Allocate workspace from XLA scratch allocator.
   FFI_ASSIGN_OR_RETURN(auto buf,
                        AllocateWorkspace<char>(scratch,
                                                (buf_bytes + sizeof(char) - 1) / sizeof(char),
                                                "gpsv"));
 
-  // Loop over batch elements, calling batchCount=1 each time.
+  // Buffers arrive in interleaved-batch layout (dim 0 = batch, stride 1),
+  // so cuSPARSE handles all batch elements in a single call.
+  // gpsvInterleavedBatch solves one RHS per call, so we loop over nrhs.
+  // algo=0 (QR) does not modify diagonal inputs, so reuse across nrhs is safe.
   auto ds_data = static_cast<T*>(ds.untyped_data());
   auto dl_data = static_cast<T*>(dl.untyped_data());
   auto d_data  = static_cast<T*>(d.untyped_data());
   auto du_data = static_cast<T*>(du.untyped_data());
   auto dw_data = static_cast<T*>(dw.untyped_data());
 
-  for (int64_t i = 0; i < batch; ++i) {
+  for (int64_t j = 0; j < nrhs; ++j) {
     FFI_RETURN_IF_ERROR_STATUS(GpsvSolve<T>(
-        handle.get(), m_v,
-        ds_data + i * m, dl_data + i * m, d_data + i * m,
-        du_data + i * m, dw_data + i * m, x_ptr + i * m,
+        handle.get(), m_v, batch_v,
+        ds_data, dl_data, d_data, du_data, dw_data,
+        x_ptr + j * batch * m,
         buf));
   }
   return ffi::Error::Success();
@@ -241,21 +242,22 @@ ffi::Error GpsvDispatch(gpuStream_t stream, ffi::ScratchAllocator scratch,
   FFI_RETURN_IF_ERROR(CheckShape(dl.dimensions(), {batch, m}, "dl", "gpsv"));
   FFI_RETURN_IF_ERROR(CheckShape(du.dimensions(), {batch, m}, "du", "gpsv"));
   FFI_RETURN_IF_ERROR(CheckShape(dw.dimensions(), {batch, m}, "dw", "gpsv"));
-  FFI_RETURN_IF_ERROR(CheckShape(b.dimensions(), {batch, m}, "b", "gpsv"));
-  FFI_RETURN_IF_ERROR(CheckShape(out->dimensions(), {batch, m}, "out", "gpsv"));
+  // b has shape (..., m, nrhs) — use SplitBatch2D to extract nrhs.
+  FFI_ASSIGN_OR_RETURN((auto [b_batch, b_rows, nrhs]), SplitBatch2D(b.dimensions()));
+  FFI_ASSIGN_OR_RETURN((auto [out_batch, out_rows, out_nrhs]), SplitBatch2D(out->dimensions()));
 
   switch (dataType) {
     case ffi::F32:
-      return GpsvImpl<float>(batch, m, stream, scratch,
+      return GpsvImpl<float>(batch, m, nrhs, stream, scratch,
                              ds, dl, d, du, dw, b, out);
     case ffi::F64:
-      return GpsvImpl<double>(batch, m, stream, scratch,
+      return GpsvImpl<double>(batch, m, nrhs, stream, scratch,
                               ds, dl, d, du, dw, b, out);
     case ffi::C64:
-      return GpsvImpl<gpuComplex>(batch, m, stream, scratch,
+      return GpsvImpl<gpuComplex>(batch, m, nrhs, stream, scratch,
                                    ds, dl, d, du, dw, b, out);
     case ffi::C128:
-      return GpsvImpl<gpuDoubleComplex>(batch, m, stream, scratch,
+      return GpsvImpl<gpuDoubleComplex>(batch, m, nrhs, stream, scratch,
                                         ds, dl, d, du, dw, b, out);
     default:
       break;
