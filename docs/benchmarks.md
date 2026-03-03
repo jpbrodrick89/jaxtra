@@ -5,11 +5,11 @@
 Comparison of `pentadiagonal_solve` (LAPACK `gbsv`) against dense LU and
 scipy's banded Cholesky for SPD pentadiagonal systems (float64, CPU):
 
-| Method                 | Implementation                                                  |
-| ---------------------- | --------------------------------------------------------------- |
-| **jaxtra (gbsv)**      | `pentadiagonal_solve` — LAPACK `dgbsv`, O(kn) banded LU (k=2) |
-| **dense LU**           | `jnp.linalg.solve` — O(n³) dense LU                           |
-| **scipy banded**       | `scipy.linalg.solveh_banded` — O(kn) banded Cholesky          |
+| Method            | Implementation                                                |
+| ----------------- | ------------------------------------------------------------- |
+| **jaxtra (gbsv)** | `pentadiagonal_solve` — LAPACK `dgbsv`, O(kn) banded LU (k=2) |
+| **dense LU**      | `jnp.linalg.solve` — O(n³) dense LU                           |
+| **scipy banded**  | `scipy.linalg.solveh_banded` — O(kn) banded Cholesky          |
 
 All JAX timings use `jax.jit` + `jax.block_until_ready` with two warmup runs
 followed by five timed repetitions; the reported value is the median.

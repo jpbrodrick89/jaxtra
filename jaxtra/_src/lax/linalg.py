@@ -12,7 +12,10 @@ import numpy as np
 
 import jax.numpy as jnp
 from jax._src import core, dtypes
-from jax.extend import ffi as _jax_ffi
+try:
+  from jax import ffi as _jax_ffi  # JAX >= 0.4.36 public API
+except ImportError:
+  from jax.extend import ffi as _jax_ffi  # JAX 0.4.27–0.4.35
 from jax._src.lax import lax
 from jax._src.lax import control_flow
 from jax._src.interpreters import mlir, ad
