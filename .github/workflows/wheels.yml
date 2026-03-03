@@ -31,7 +31,7 @@ jobs:
             cibw_platform: macos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ── QEMU for Linux aarch64 cross-compilation ────────────────────────
       - name: Set up QEMU
@@ -41,7 +41,7 @@ jobs:
           platforms: arm64
 
       # ── Build wheels ─────────────────────────────────────────────────────
-      - uses: pypa/cibuildwheel@v2.22
+      - uses: pypa/cibuildwheel@v3.3
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp311-* cp312-* cp313-* cp314-*"
@@ -63,7 +63,7 @@ jobs:
           CIBW_TEST_REQUIRES: pytest jax jaxlib numpy scipy
           CIBW_TEST_COMMAND: pytest {project}/tests -x -q
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: ./wheelhouse/*.whl
@@ -72,9 +72,9 @@ jobs:
   build_sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -83,7 +83,7 @@ jobs:
           pip install build
           python -m build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -100,13 +100,13 @@ jobs:
       id-token: write # for OIDC trusted publishing
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist/
