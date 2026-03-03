@@ -26,8 +26,10 @@ void AssignKernelFn(void* fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Handler macro — mirrors JAX_CPU_DEFINE_ORMQR in jaxlib upstream.
+// Handler macros
 // ---------------------------------------------------------------------------
+
+// ORMQR — mirrors JAX_CPU_DEFINE_ORMQR in jaxlib upstream.
 #define JAXTRA_CPU_DEFINE_ORMQR(name, dtype)                     \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
       name, OrthogonalQrMultiply<dtype>::Kernel,                  \
@@ -39,6 +41,18 @@ void AssignKernelFn(void* fn) {
           .Attr<bool>("transpose")                                \
           .Ret<ffi::Buffer<dtype>>()) /* c_out */
 
+// SYTRF — LDL decomposition (symmetric / Hermitian indefinite).
+// Two result buffers: a_out (factored matrix, same dtype) and ipiv (int32).
+#define JAXTRA_CPU_DEFINE_SYTRF(name, dtype)                          \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                       \
+      name, LdlDecomposition<dtype>::Kernel,                           \
+      ffi::Ffi::Bind()                                                 \
+          .Arg<ffi::Buffer<dtype>>()              /* a */              \
+          .Attr<bool>("lower")                                         \
+          .Attr<bool>("hermitian")                                     \
+          .Ret<ffi::Buffer<dtype>>()              /* a_out */          \
+          .Ret<ffi::Buffer<ffi::DataType::S32>>()) /* ipiv_out */
+
 // ---------------------------------------------------------------------------
 // XLA FFI handler bindings (typed API, api_version=1).
 // Names match JAX PR #35104.
@@ -48,12 +62,24 @@ JAXTRA_CPU_DEFINE_ORMQR(lapack_dormqr_ffi, ffi::DataType::F64);
 JAXTRA_CPU_DEFINE_ORMQR(lapack_cunmqr_ffi, ffi::DataType::C64);
 JAXTRA_CPU_DEFINE_ORMQR(lapack_zunmqr_ffi, ffi::DataType::C128);
 
+JAXTRA_CPU_DEFINE_SYTRF(lapack_ssytrf_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_SYTRF(lapack_dsytrf_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_SYTRF(lapack_csytrf_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_SYTRF(lapack_zsytrf_ffi, ffi::DataType::C128);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
+// AssignKernelFnHe — assigns the hetrf function pointer (fn_he member).
+// Used for complex types only; real types leave fn_he as nullptr.
+template <typename Kernel>
+void AssignKernelFnHe(void* fn) {
+  Kernel::fn_he = reinterpret_cast<typename Kernel::FnType*>(fn);
+}
+
 NB_MODULE(_jaxtra, m) {
-  m.doc() = "jaxtra C extension: LAPACK ORMQR via XLA FFI";
+  m.doc() = "jaxtra C extension: LAPACK ORMQR and SYTRF/HETRF via XLA FFI";
 
   // initialize() — mirrors jaxlib's GetLapackKernelsFromScipy().
   // Imports scipy.linalg.cython_lapack, extracts raw function pointers from
@@ -66,10 +92,19 @@ NB_MODULE(_jaxtra, m) {
     auto lapack_ptr = [&](const char* name) -> void* {
       return nb::cast<nb::capsule>(lapack_capi[name]).data();
     };
+    // ORMQR
     AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F32>>(lapack_ptr("sormqr"));
     AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::F64>>(lapack_ptr("dormqr"));
     AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C64>>(lapack_ptr("cunmqr"));
     AssignKernelFn<OrthogonalQrMultiply<ffi::DataType::C128>>(lapack_ptr("zunmqr"));
+    // SYTRF — symmetric (real and complex symmetric)
+    AssignKernelFn<LdlDecomposition<ffi::DataType::F32>>(lapack_ptr("ssytrf"));
+    AssignKernelFn<LdlDecomposition<ffi::DataType::F64>>(lapack_ptr("dsytrf"));
+    AssignKernelFn<LdlDecomposition<ffi::DataType::C64>>(lapack_ptr("csytrf"));
+    AssignKernelFn<LdlDecomposition<ffi::DataType::C128>>(lapack_ptr("zsytrf"));
+    // HETRF — Hermitian (complex only; real types leave fn_he as nullptr)
+    AssignKernelFnHe<LdlDecomposition<ffi::DataType::C64>>(lapack_ptr("chetrf"));
+    AssignKernelFnHe<LdlDecomposition<ffi::DataType::C128>>(lapack_ptr("zhetrf"));
   });
 
   // registrations() — returns {platform: [(name, capsule, api_version)]}
@@ -87,6 +122,10 @@ NB_MODULE(_jaxtra, m) {
     make_entry("lapack_dormqr_ffi", reinterpret_cast<void*>(lapack_dormqr_ffi));
     make_entry("lapack_cunmqr_ffi", reinterpret_cast<void*>(lapack_cunmqr_ffi));
     make_entry("lapack_zunmqr_ffi", reinterpret_cast<void*>(lapack_zunmqr_ffi));
+    make_entry("lapack_ssytrf_ffi", reinterpret_cast<void*>(lapack_ssytrf_ffi));
+    make_entry("lapack_dsytrf_ffi", reinterpret_cast<void*>(lapack_dsytrf_ffi));
+    make_entry("lapack_csytrf_ffi", reinterpret_cast<void*>(lapack_csytrf_ffi));
+    make_entry("lapack_zsytrf_ffi", reinterpret_cast<void*>(lapack_zsytrf_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });

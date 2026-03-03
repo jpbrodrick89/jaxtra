@@ -48,6 +48,10 @@ NB_MODULE(_jaxtra_cuda, m) {
     };
     make_entry(JAX_GPU_PREFIX "solver_ormqr_ffi",
                reinterpret_cast<void*>(OrmqrFfi));
+#ifdef JAX_GPU_CUDA
+    make_entry(JAX_GPU_PREFIX "solver_sytrf_ffi",
+               reinterpret_cast<void*>(SytrfFfi));
+#endif  // JAX_GPU_CUDA
     out["CUDA"] = gpu_targets;
     return out;
   });
