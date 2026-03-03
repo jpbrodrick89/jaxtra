@@ -119,6 +119,8 @@ doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE"]
 dev-dependencies = [
   "scikit-build-core>=0.9",
   "nanobind>=2.0",
+  "matplotlib>=3.7",
+  "scipy>=1.11",
 ]
 
 # ---------------------------------------------------------------------------
