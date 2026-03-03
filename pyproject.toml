@@ -115,10 +115,12 @@ doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE"]
 # jax/jaxlib; without this the PEP 517 build-isolation env resolves jax
 # independently of the lock file and can pull in a newer jax whose XLA FFI
 # API version is incompatible with the locked jaxlib at runtime.
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "scikit-build-core>=0.9",
   "nanobind>=2.0",
+  "matplotlib>=3.7",
+  "scipy>=1.11",
 ]
 
 # ---------------------------------------------------------------------------

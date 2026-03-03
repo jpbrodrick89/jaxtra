@@ -1,11 +1,28 @@
 """
-Benchmark: jaxtra ORMQR vs dense QR vs scipy lstsq (SVD)
-=========================================================
+Benchmark: jaxtra ORMQR vs dense QR vs scipy gelsy (QR) vs JAX lstsq (SVD)
+===========================================================================
 For an overdetermined system A @ x ≈ b:
 
   jaxtra   : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
   dense QR : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
-  scipy    : scipy.linalg.lstsq  (SVD-based, NumPy arrays)
+  scipy gelsy : scipy.linalg.lstsq(..., lapack_driver='gelsy')  (QR, NumPy arrays)
+  JAX lstsq   : jnp.linalg.lstsq                               (SVD driver)
+
+Performance note — single-RHS BLAS tier
+----------------------------------------
+For a 1-D right-hand side, jaxtra's dormqr applies each Householder reflector
+via BLAS-2 (DLARF), because LAPACK's BLAS-3 blocked path (DLARFB) only
+activates when C has multiple columns.  Dense QR forms Q with BLAS-3 dorgqr
+and then calls a single highly-optimised dgemv.  Both paths cost O(mn) FLOPs
+for the Q-application step, so their wall-clock times are similar; jaxtra's
+advantage grows with the number of right-hand sides.
+
+FFI kernel verification
+-----------------------
+The compiled HLO contains ``@lapack_sormqr_ffi`` / ``@lapack_dormqr_ffi`` —
+jaxtra is using the LAPACK FFI kernel, not the Python fallback.  The Python
+fallback in ``_src/lax/linalg.py`` is only exercised on platforms with no
+registered FFI target (TPU, absent .so).
 
 Results are written to  benchmarks/results/bench_least_squares.csv
 Plots are written to    benchmarks/results/bench_cols{20,50,100}.png
@@ -50,9 +67,16 @@ def _dense_qr_solve(A, b):
     return jsl.solve_triangular(R, Qtb)
 
 
-def _scipy_svd_solve(A_np, b_np):
-    """Least-squares via scipy.linalg.lstsq (SVD)."""
-    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np)
+@jax.jit
+def _jax_lstsq_solve(A, b):
+    """Least-squares via jnp.linalg.lstsq (SVD driver)."""
+    x, _, _, _ = jnp.linalg.lstsq(A, b)
+    return x
+
+
+def _scipy_gelsy_solve(A_np, b_np):
+    """Least-squares via scipy.linalg.lstsq with QR driver (gelsy)."""
+    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np, lapack_driver='gelsy')
     return x
 
 
@@ -98,7 +122,8 @@ RNG = np.random.default_rng(0)
 METHODS = [
     ("jaxtra (ORMQR)", "#1f77b4", "o"),
     ("dense QR",       "#ff7f0e", "s"),
-    ("scipy SVD",      "#2ca02c", "^"),
+    ("scipy gelsy",    "#2ca02c", "^"),
+    ("JAX lstsq",      "#d62728", "D"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -110,8 +135,8 @@ records = []   # list of dicts written to CSV
 for n_cols in COL_COUNTS:
     print(f"\nn_cols = {n_cols}")
     print(f"  {'n_rows':>7}  {'jaxtra (ms)':>12}  {'dense QR (ms)':>14}  "
-          f"{'scipy SVD (ms)':>15}  {'vs QR':>6}  {'vs SVD':>7}")
-    print("  " + "-" * 68)
+          f"{'gelsy (ms)':>11}  {'JAX lstsq (ms)':>15}")
+    print("  " + "-" * 70)
 
     for n_rows in ROW_SIZES:
         A_np = RNG.standard_normal((n_rows, n_cols)).astype(np.float64)
@@ -119,26 +144,29 @@ for n_cols in COL_COUNTS:
         A_jx = jnp.array(A_np)
         b_jx = jnp.array(b_np)
 
-        t_jaxtra = time_jax_fn(_jaxtra_solve,   A_jx, b_jx,
+        t_jaxtra = time_jax_fn(_jaxtra_solve,    A_jx, b_jx,
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-        t_dense  = time_jax_fn(_dense_qr_solve, A_jx, b_jx,
+        t_dense  = time_jax_fn(_dense_qr_solve,  A_jx, b_jx,
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-        t_scipy  = time_numpy_fn(_scipy_svd_solve, A_np, b_np,
+        t_gelsy  = time_numpy_fn(_scipy_gelsy_solve, A_np, b_np,
                                   n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_jlstsq = time_jax_fn(_jax_lstsq_solve, A_jx, b_jx,
+                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
         records.append({"n_rows": n_rows, "n_cols": n_cols,
                          "method": "jaxtra (ORMQR)", "time_ms": t_jaxtra * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "dense QR",       "time_ms": t_dense  * 1e3})
+                         "method": "dense QR",        "time_ms": t_dense  * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "scipy SVD",       "time_ms": t_scipy  * 1e3})
+                         "method": "scipy gelsy",     "time_ms": t_gelsy  * 1e3})
+        records.append({"n_rows": n_rows, "n_cols": n_cols,
+                         "method": "JAX lstsq",       "time_ms": t_jlstsq * 1e3})
 
         print(f"  {n_rows:>7d}  "
               f"{t_jaxtra*1e3:12.2f}  "
               f"{t_dense*1e3:14.2f}  "
-              f"{t_scipy*1e3:15.2f}  "
-              f"{t_dense/t_jaxtra:6.2f}x  "
-              f"{t_scipy/t_jaxtra:6.2f}x")
+              f"{t_gelsy*1e3:11.2f}  "
+              f"{t_jlstsq*1e3:15.2f}")
 
 # ---------------------------------------------------------------------------
 # Write CSV
@@ -184,4 +212,4 @@ for n_cols in COL_COUNTS:
     plt.close(fig)
     print(f"Plot saved to {out}")
 
-print("\nSpeedup = time(reference) / time(jaxtra)  — higher is better for jaxtra")
+print("\nAll methods compared — see benchmarks/results/ for CSV and plots.")
