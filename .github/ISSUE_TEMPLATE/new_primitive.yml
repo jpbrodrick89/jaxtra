@@ -12,17 +12,6 @@ body:
         understand its interface.
 
   - type: input
-    id: lapack_routine
-    attributes:
-      label: LAPACK routine name
-      description: >
-        The name of the LAPACK routine (e.g. `dormqr`, `dtrtrs`, `dpotrf`).
-        Include the leading letter indicating the dtype variant you care about most.
-      placeholder: "e.g. dormqr"
-    validations:
-      required: true
-
-  - type: input
     id: jax_api
     attributes:
       label: Proposed JAX public API
@@ -34,12 +23,23 @@ body:
   - type: textarea
     id: use_case
     attributes:
-      label: Motivation / use case
+      label: Description / motivation
       description: >
         Why do you need this routine? Describe the algorithm or workflow that would benefit.
         A concrete example (e.g. least-squares via QR) is very helpful.
       placeholder: |
         I need this to implement X, currently I work around it by doing Y which is slow because …
+    validations:
+      required: true
+
+  - type: input
+    id: lapack_routine
+    attributes:
+      label: LAPACK routine name
+      description: >
+        The name of the LAPACK routine (e.g. `dormqr`, `dtrtrs`, `dpotrf`).
+        Include the leading letter indicating the dtype variant you care about most.
+      placeholder: "e.g. dormqr"
     validations:
       required: true
 
@@ -68,18 +68,47 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: hardware
+  - type: textarea
+    id: cpu_lowering
     attributes:
-      label: Target hardware
-      description: Which backends matter for your workload?
-      multiple: true
-      options:
-        - CPU
-        - GPU (CUDA)
-        - Both
-    validations:
-      required: true
+      label: CPU lowering
+      description: >
+        Describe the required LAPACK call(s) for the CPU path. Note any workspace
+        query, in-place constraints, or special argument ordering.
+      placeholder: |
+        Call `dormqr` / `zunmqr` etc. with arguments …
+        Workspace query: …
+
+  - type: textarea
+    id: gpu_lowering
+    attributes:
+      label: GPU lowering
+      description: >
+        Describe the cuSOLVER (or rocSOLVER) kernel that should back the GPU path,
+        if known. Leave blank if GPU support is not required.
+      placeholder: |
+        cuSOLVER: `cusolverDn<t>ormqr` …
+
+  - type: textarea
+    id: jax_fallback
+    attributes:
+      label: Pure-JAX fallback
+      description: >
+        If no FFI target is available (e.g. TPU), what pure-JAX implementation
+        should be used? Reference existing `jax.scipy` / `jax.numpy` calls where possible.
+      placeholder: |
+        Use `jax.scipy.linalg.solve_triangular` or compose from `jnp.linalg` primitives …
+
+  - type: textarea
+    id: benchmarks
+    attributes:
+      label: Suggested benchmarks
+      description: >
+        What workloads or problem sizes should be benchmarked to demonstrate the
+        speedup? Include matrix dimensions, batch sizes, or other relevant parameters.
+      placeholder: |
+        - Square solve: m=n=1000, batch=32, f64
+        - Tall-and-skinny: m=10000, n=100, f32
 
   - type: textarea
     id: references
@@ -90,10 +119,3 @@ body:
       placeholder: |
         - https://netlib.org/lapack/explore-html/…
         - scipy.linalg docs: …
-
-  - type: checkboxes
-    id: contribution
-    attributes:
-      label: Contribution
-      options:
-        - label: I am willing to implement this primitive (see CONTRIBUTING.md for a guide)
