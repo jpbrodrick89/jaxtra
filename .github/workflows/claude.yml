@@ -49,12 +49,16 @@ jobs:
           additional_permissions: |
             actions: read
 
-          allowed_tools: |
-            Bash(uv sync:*)
-            Bash(uv run:*)
-            Bash(pre-commit run:*)
-            Bash(git diff:*)
-            Bash(git log:*)
-            Bash(git status:*)
-            Bash(git checkout:*)
-            Bash(git branch:*)
+          claude_args: >-
+            --allowedTools
+            "Bash(uv sync:*)"
+            "Bash(uv run:*)"
+            "Bash(pre-commit run:*)"
+            "Bash(git add:*)"
+            "Bash(git commit:*)"
+            "Bash(git push:*)"
+            "Bash(git diff:*)"
+            "Bash(git log:*)"
+            "Bash(git status:*)"
+            "Bash(git checkout:*)"
+            "Bash(git branch:*)"
