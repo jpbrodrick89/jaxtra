@@ -30,6 +30,7 @@ jobs:
             chore
             ci
             security
+            claude
           scopes: |
             lapack
             cuda
