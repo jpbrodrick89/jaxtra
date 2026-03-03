@@ -38,9 +38,9 @@ jobs:
           enable-caching: true
           python-version: ${{ matrix.python-version }}
       - name: Install (build + runtime + test deps)
-        run: uv sync --extra test
+        run: uv sync --frozen --extra test --no-build-isolation-package jaxtra
       - name: Run tests
-        run: uv run pytest tests/ -v
+        run: uv run --locked pytest tests/
 
   # ── Build + import smoke-test via plain pip (no uv) ──────────────────────
   install-pip:
