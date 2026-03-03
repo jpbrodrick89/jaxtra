@@ -108,6 +108,20 @@ addopts = "--import-mode=importlib"
 doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE"]
 
 # ---------------------------------------------------------------------------
+# uv — dev dependencies (included in lock file so build uses locked jax)
+# ---------------------------------------------------------------------------
+# scikit-build-core and nanobind are listed here so they appear in uv.lock.
+# CI uses --no-build-isolation-package jaxtra to build against the locked
+# jax/jaxlib; without this the PEP 517 build-isolation env resolves jax
+# independently of the lock file and can pull in a newer jax whose XLA FFI
+# API version is incompatible with the locked jaxlib at runtime.
+[tool.uv]
+dev-dependencies = [
+  "scikit-build-core>=0.9",
+  "nanobind>=2.0",
+]
+
+# ---------------------------------------------------------------------------
 # ruff — linting (mirrors JAX's ruff config)
 # ---------------------------------------------------------------------------
 [tool.ruff]
