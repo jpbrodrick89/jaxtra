@@ -41,9 +41,10 @@ x = jsl.solve_triangular(R, Qtb)
 
 ### LAPACK routines exposed
 
-| Routine                    | Description                                                                                     | Primitive                      |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------ |
-| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._src.lax.linalg.ormqr` |
+| Routine                    | Description                                                                                     | Primitive                                   |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._src.lax.linalg.ormqr`              |
+| `?gbsv`  (`s`/`d`/`c`/`z`) | Solve a pentadiagonal (banded, KL=KU=2) linear system via banded LU; GPU uses cuSPARSE `gpsvInterleavedBatch` | `jaxtra.lax.linalg.pentadiagonal_solve` |
 
 ---
 
@@ -83,3 +84,11 @@ Mirrors `jax.scipy.linalg`.
 The underlying `ormqr` primitive is accessible at `jaxtra._src.lax.linalg.ormqr`
 for users who need to apply Q directly (same convention as reaching into
 `jax._src.lax.linalg` for primitives not yet in the public API).
+
+#### `jaxtra.lax.linalg`
+
+Low-level primitives analogous to `jax.lax.linalg`.
+
+| Symbol                | Description                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pentadiagonal_solve` | Solve A x = b for a pentadiagonal matrix A (five diagonals). CPU: LAPACK `gbsv`. GPU: cuSPARSE `gpsvInterleavedBatch`. Supports `jit`, `vmap`, `grad`. |

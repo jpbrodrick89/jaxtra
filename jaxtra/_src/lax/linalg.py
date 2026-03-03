@@ -12,6 +12,7 @@ import numpy as np
 
 import jax.numpy as jnp
 from jax._src import core, dtypes
+from jax.extend import ffi as _jax_ffi
 from jax._src.lax import lax
 from jax._src.lax import control_flow
 from jax._src.interpreters import mlir, ad
@@ -243,7 +244,7 @@ def _pentadiagonal_solve_cpu_gpu_lowering(
     target_name = lapack.prepare_lapack_call("gbsv_ffi", d_aval.dtype)
   else:
     target_name = f"{target_name_prefix}sparse_gpsvInterleaved_ffi"
-  rule = _linalg_ffi_lowering(target_name, operand_output_aliases={5: 0})
+  rule = _jax_ffi.ffi_lowering(target_name, operand_output_aliases={0: 5})
   return rule(ctx, ds, dl, d, du, dw, b)
 
 
@@ -276,8 +277,6 @@ def _pentadiagonal_solve_transpose(ct, ds, dl, d, du, dw, b):
   #   (A^T)[i, i]   = A[i,   i] = d[i]      (main of A^T)
   #   (A^T)[i, i+1] = A[i+1, i] = dl[i+1]  (upper-1 of A^T)
   #   (A^T)[i, i+2] = A[i+2, i] = ds[i+2]  (upper-2 of A^T)
-  n = d.shape[-1]
-
   zeros_1 = jnp.zeros(d.shape[:-1] + (1,), dtype=d.dtype)
   zeros_2 = jnp.zeros(d.shape[:-1] + (2,), dtype=d.dtype)
 
