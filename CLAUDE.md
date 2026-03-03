@@ -30,6 +30,37 @@ GPU path mirrors the same C++ layers under `csrc/gpu/` and
 
 ---
 
+## Environment setup (do this first)
+
+Before reasoning about any task that involves running Python, tests, linting,
+or benchmarks, **immediately** kick off the environment setup in the
+background so dependencies are ready by the time you need them:
+
+```bash
+# Install all deps (frozen lock file, build jaxtra in-place)
+uv sync --frozen --extra test --no-build-isolation-package jaxtra
+```
+
+```bash
+# Smoke-test — verifies the install succeeded
+uv run --locked python -c "from jaxtra.scipy.linalg import qr_multiply; print('ok')"
+```
+
+Run both commands **in parallel with your initial exploration** of the task.
+
+**Always** prefix Python commands with `uv run --locked`. Never use bare
+`python`, `pytest`, or `pre-commit` — always go through `uv run --locked`.
+
+Examples:
+
+```bash
+uv run --locked pytest tests/ -v            # run tests
+uv run --locked pre-commit run --all-files  # run linters
+uv run --locked python benchmarks/bench_least_squares.py  # benchmarks
+```
+
+---
+
 ## Common tasks
 
 ### Adding a new routine
@@ -40,7 +71,7 @@ templates. Summary checklist is at the end.
 ### Running tests
 
 ```bash
-pytest tests/ -v
+uv run --locked pytest tests/ -v
 ```
 
 ### Rebuilding after C++ changes
