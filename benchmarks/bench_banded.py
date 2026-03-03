@@ -1,11 +1,13 @@
 """
-Benchmark: jaxtra pentadiagonal_solve vs dense LU vs scipy banded Cholesky
-===========================================================================
+Benchmark: jaxtra pentadiagonal_solve vs dense solvers vs scipy banded
+=======================================================================
 For an SPD pentadiagonal system A x = b of size n×n:
 
-  jaxtra          : pentadiagonal_solve  (LAPACK gbsv / cuSPARSE gpsvInterleavedBatch)
-  dense LU        : jnp.linalg.solve     (O(n^3), dense)
-  scipy banded    : scipy.linalg.solveh_banded  (banded Cholesky, O(kn), k=2)
+  jaxtra              : pentadiagonal_solve  (LAPACK gbsv / cuSPARSE gpsvInterleavedBatch)
+  dense LU            : jnp.linalg.solve     (O(n^3), dense)
+  JAX Cholesky        : jax.scipy.linalg.cho_factor + cho_solve  (O(n^3), dense)
+  scipy banded        : scipy.linalg.solveh_banded  (banded Cholesky, O(kn), k=2)
+  scipy solve_banded  : scipy.linalg.solve_banded   (general banded LU, O(kn), k=2)
 
 The SPD pentadiagonal matrix uses the biharmonic stencil:
     A[i, i±2] = 1,  A[i, i±1] = -4,  A[i, i] = (8 + epsilon)
@@ -27,6 +29,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jax_linalg
 from scipy import linalg as scipy_linalg
 
 from jaxtra._src.lax.linalg import pentadiagonal_solve
@@ -50,9 +53,21 @@ def _dense_solve(A, b):
     return jnp.linalg.solve(A, b)
 
 
+@jax.jit
+def _jax_cholesky_solve(A, b):
+    """Dense Cholesky solve via jax.scipy.linalg (cho_factor + cho_solve)."""
+    c, lower = jax_linalg.cho_factor(A)
+    return jax_linalg.cho_solve((c, lower), b)
+
+
 def _scipy_banded_solve(ab_upper, b_np):
     """Banded Cholesky via scipy.linalg.solveh_banded (upper triangular storage)."""
     return scipy_linalg.solveh_banded(ab_upper, b_np, lower=False)
+
+
+def _scipy_solve_banded(ab_banded, b_np):
+    """General banded LU solve via scipy.linalg.solve_banded (kl=2, ku=2)."""
+    return scipy_linalg.solve_banded((2, 2), ab_banded, b_np)
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +77,12 @@ def _scipy_banded_solve(ab_upper, b_np):
 def make_spd_penta(n, dtype=np.float64):
     """Build an SPD pentadiagonal system using the biharmonic stencil.
 
-    Returns (ds, dl, d, du, dw, b, A_dense, ab_upper_scipy) where:
+    Returns (ds, dl, d, du, dw, b, A_dense, ab_upper_scipy, ab_banded) where:
       - ds, dl, d, du, dw are the five diagonals (length n each)
       - b is the right-hand side
-      - A_dense is the full n×n matrix (for dense solver)
-      - ab_upper_scipy is the banded upper-triangular storage for scipy
+      - A_dense is the full n×n matrix (for dense solvers)
+      - ab_upper_scipy is the banded upper-triangular storage for solveh_banded
+      - ab_banded is the general banded storage (kl=2, ku=2) for solve_banded
     """
     eps = 0.1  # small shift to ensure strict positive definiteness
     ds_np = np.ones(n, dtype=dtype)
@@ -95,7 +111,16 @@ def make_spd_penta(n, dtype=np.float64):
     ab_upper[1, 1:] = du_np[:-1]    # first super-diagonal (A[j, j+1] stored at ab[1, j+1])
     ab_upper[0, 2:] = dw_np[:-2]    # second super-diagonal (A[j, j+2] stored at ab[0, j+2])
 
-    return ds_np, dl_np, d_np, du_np, dw_np, b_np, A_dense, ab_upper
+    # scipy solve_banded general banded storage (kl=2, ku=2):
+    # ab[ku + i - j, j] = A[i, j]  =>  ab[2 + i - j, j] = A[i, j]
+    ab_banded = np.zeros((5, n), dtype=dtype)
+    ab_banded[0, 2:] = dw_np[:-2]   # row 0 = ku-2: A[j-2, j] = dw[j-2]
+    ab_banded[1, 1:] = du_np[:-1]   # row 1 = ku-1: A[j-1, j] = du[j-1]
+    ab_banded[2, :]  = d_np          # row 2 = ku:   A[j,   j] = d[j]
+    ab_banded[3, :-1] = dl_np[1:]   # row 3 = ku+1: A[j+1, j] = dl[j+1]
+    ab_banded[4, :-2] = ds_np[2:]   # row 4 = ku+2: A[j+2, j] = ds[j+2]
+
+    return ds_np, dl_np, d_np, du_np, dw_np, b_np, A_dense, ab_upper, ab_banded
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +160,11 @@ N_WARMUP = 2
 N_REPEAT = 5
 
 METHODS = [
-    ("jaxtra (gbsv)",    "#1f77b4", "o"),
-    ("dense LU",         "#ff7f0e", "s"),
-    ("scipy banded",     "#2ca02c", "^"),
+    ("jaxtra (gbsv)",       "#1f77b4", "o"),
+    ("dense LU",            "#ff7f0e", "s"),
+    ("JAX Cholesky",        "#9467bd", "D"),
+    ("scipy solveh_banded", "#2ca02c", "^"),
+    ("scipy solve_banded",  "#d62728", "v"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -147,11 +174,12 @@ METHODS = [
 records = []
 
 print(f"\n{'n':>7}  {'jaxtra (ms)':>12}  {'dense LU (ms)':>14}  "
-      f"{'scipy banded (ms)':>18}  {'vs dense':>9}  {'vs scipy':>9}")
-print("-" * 80)
+      f"{'JAX Chol (ms)':>14}  {'solveh_bnd (ms)':>16}  {'solve_bnd (ms)':>15}  "
+      f"{'vs dense':>9}  {'vs s_bnd':>9}")
+print("-" * 110)
 
 for n in SIZES:
-    ds_np, dl_np, d_np, du_np, dw_np, b_np, A_dense, ab_upper = make_spd_penta(n)
+    ds_np, dl_np, d_np, du_np, dw_np, b_np, A_dense, ab_upper, ab_banded = make_spd_penta(n)
 
     # JAX arrays
     ds_j  = jnp.array(ds_np)
@@ -162,23 +190,31 @@ for n in SIZES:
     b_j   = jnp.array(b_np)
     A_j   = jnp.array(A_dense)
 
-    t_jaxtra = time_jax_fn(_jaxtra_solve, ds_j, dl_j, d_j, du_j, dw_j, b_j,
-                            n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-    t_dense  = time_jax_fn(_dense_solve, A_j, b_j,
-                            n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-    t_scipy  = time_numpy_fn(_scipy_banded_solve, ab_upper, b_np,
-                              n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_jaxtra    = time_jax_fn(_jaxtra_solve, ds_j, dl_j, d_j, du_j, dw_j, b_j,
+                               n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_dense     = time_jax_fn(_dense_solve, A_j, b_j,
+                               n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_jax_chol  = time_jax_fn(_jax_cholesky_solve, A_j, b_j,
+                               n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_solveh    = time_numpy_fn(_scipy_banded_solve, ab_upper, b_np,
+                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_solve_bnd = time_numpy_fn(_scipy_solve_banded, ab_banded, b_np,
+                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
-    records.append({"n": n, "method": "jaxtra (gbsv)",  "time_ms": t_jaxtra * 1e3})
-    records.append({"n": n, "method": "dense LU",       "time_ms": t_dense  * 1e3})
-    records.append({"n": n, "method": "scipy banded",   "time_ms": t_scipy  * 1e3})
+    records.append({"n": n, "method": "jaxtra (gbsv)",       "time_ms": t_jaxtra    * 1e3})
+    records.append({"n": n, "method": "dense LU",            "time_ms": t_dense     * 1e3})
+    records.append({"n": n, "method": "JAX Cholesky",        "time_ms": t_jax_chol  * 1e3})
+    records.append({"n": n, "method": "scipy solveh_banded", "time_ms": t_solveh    * 1e3})
+    records.append({"n": n, "method": "scipy solve_banded",  "time_ms": t_solve_bnd * 1e3})
 
     print(f"{n:>7d}  "
           f"{t_jaxtra*1e3:12.2f}  "
           f"{t_dense*1e3:14.2f}  "
-          f"{t_scipy*1e3:18.2f}  "
+          f"{t_jax_chol*1e3:14.2f}  "
+          f"{t_solveh*1e3:16.2f}  "
+          f"{t_solve_bnd*1e3:15.2f}  "
           f"{t_dense/t_jaxtra:9.2f}x  "
-          f"{t_scipy/t_jaxtra:9.2f}x")
+          f"{t_solveh/t_jaxtra:9.2f}x")
 
 # ---------------------------------------------------------------------------
 # Write CSV
@@ -207,7 +243,7 @@ ax.set_xscale("log")
 ax.set_yscale("log")
 ax.set_xlabel("System size n", fontsize=12)
 ax.set_ylabel("Time (ms)", fontsize=12)
-ax.set_title("Pentadiagonal SPD solve  —  jaxtra vs dense LU vs scipy banded", fontsize=11)
+ax.set_title("Pentadiagonal SPD solve  —  jaxtra vs dense LU / Cholesky vs scipy banded", fontsize=11)
 ax.set_xticks(SIZES)
 ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 ax.xaxis.set_minor_formatter(mticker.NullFormatter())
