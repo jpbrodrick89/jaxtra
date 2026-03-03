@@ -1,0 +1,121 @@
+name: New primitive request
+description: Request a new LAPACK routine to be exposed as a JAX primitive
+title: "feat: add <routine> primitive"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to request a new LAPACK routine exposed as a JAX primitive.
+        Before filing, check the [LAPACK working notes](https://netlib.org/lapack/lug/) and
+        [ScaLAPACK](https://netlib.org/scalapack/slug/) to confirm the routine exists and
+        understand its interface.
+
+  - type: input
+    id: jax_api
+    attributes:
+      label: Proposed JAX public API
+      description: >
+        The `jax.scipy` or `jax.numpy` function this primitive should mirror or extend.
+        Leave blank if there is no existing JAX equivalent.
+      placeholder: "e.g. jax.scipy.linalg.solve_triangular"
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Description / motivation
+      description: >
+        Why do you need this routine? Describe the algorithm or workflow that would benefit.
+        A concrete example (e.g. least-squares via QR) is very helpful.
+      placeholder: |
+        I need this to implement X, currently I work around it by doing Y which is slow because …
+    validations:
+      required: true
+
+  - type: input
+    id: lapack_routine
+    attributes:
+      label: LAPACK routine name
+      description: >
+        The name of the LAPACK routine (e.g. `dormqr`, `dtrtrs`, `dpotrf`).
+        Include the leading letter indicating the dtype variant you care about most.
+      placeholder: "e.g. dormqr"
+    validations:
+      required: true
+
+  - type: textarea
+    id: signature
+    attributes:
+      label: Expected signature
+      description: >
+        Sketch the Python signature you would like to call, including dtypes and array shapes.
+      render: python
+      placeholder: |
+        def my_routine(a: ArrayLike, b: ArrayLike, ...) -> Array:
+            ...
+
+  - type: dropdown
+    id: dtype_support
+    attributes:
+      label: Required dtype(s)
+      description: Which floating-point precisions does your use case require?
+      multiple: true
+      options:
+        - float32 (f32)
+        - float64 (f64)
+        - complex64 (c64)
+        - complex128 (c128)
+    validations:
+      required: true
+
+  - type: textarea
+    id: cpu_lowering
+    attributes:
+      label: CPU lowering
+      description: >
+        Describe the required LAPACK call(s) for the CPU path. Note any workspace
+        query, in-place constraints, or special argument ordering.
+      placeholder: |
+        Call `dormqr` / `zunmqr` etc. with arguments …
+        Workspace query: …
+
+  - type: textarea
+    id: gpu_lowering
+    attributes:
+      label: GPU lowering
+      description: >
+        Describe the cuSOLVER (or rocSOLVER) kernel that should back the GPU path,
+        if known. Leave blank if GPU support is not required.
+      placeholder: |
+        cuSOLVER: `cusolverDn<t>ormqr` …
+
+  - type: textarea
+    id: jax_fallback
+    attributes:
+      label: Pure-JAX fallback
+      description: >
+        If no FFI target is available (e.g. TPU), what pure-JAX implementation
+        should be used? Reference existing `jax.scipy` / `jax.numpy` calls where possible.
+      placeholder: |
+        Use `jax.scipy.linalg.solve_triangular` or compose from `jnp.linalg` primitives …
+
+  - type: textarea
+    id: benchmarks
+    attributes:
+      label: Suggested benchmarks
+      description: >
+        What workloads or problem sizes should be benchmarked to demonstrate the
+        speedup? Include matrix dimensions, batch sizes, or other relevant parameters.
+      placeholder: |
+        - Square solve: m=n=1000, batch=32, f64
+        - Tall-and-skinny: m=10000, n=100, f32
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: >
+        Links to the LAPACK man page, relevant papers, JAX or SciPy issues, etc.
+      placeholder: |
+        - https://netlib.org/lapack/explore-html/…
+        - scipy.linalg docs: …
