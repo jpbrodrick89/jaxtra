@@ -13,13 +13,8 @@ scipy's banded Cholesky for SPD pentadiagonal systems (float64, CPU):
 
 All JAX timings use `jax.jit` + `jax.block_until_ready` with two warmup runs
 followed by five timed repetitions; the reported value is the median.
-Raw results are in `benchmarks/results/bench_banded.csv`.
-
-```{figure} ../benchmarks/results/bench_banded.png
-:alt: Benchmark: pentadiagonal solve
-:width: 90%
-:align: center
-```
+Run `python benchmarks/bench_banded.py` to reproduce; results are written to
+`benchmarks/results/bench_banded.csv` and `benchmarks/results/bench_banded.png`.
 
 ---
 
