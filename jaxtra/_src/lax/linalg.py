@@ -169,20 +169,6 @@ register_cpu_gpu_lowering(ormqr_p, _ormqr_cpu_gpu_lowering)
 # Solves A x = b, returning x with the same shape as b.
 
 
-def _penta_matvec(ds, dl, d, du, dw, v):
-  """Apply the pentadiagonal matrix A to vector v: returns A @ v."""
-  zeros_1 = jnp.zeros_like(v[..., :1])
-  zeros_2 = jnp.zeros_like(v[..., :2])
-  # Row i contribution: ds[i]*v[i-2] + dl[i]*v[i-1] + d[i]*v[i]
-  #                   + du[i]*v[i+1] + dw[i]*v[i+2]
-  out = d * v
-  out = out + jnp.concatenate([zeros_1, dl[..., 1:] * v[..., :-1]], axis=-1)
-  out = out + jnp.concatenate([zeros_2, ds[..., 2:] * v[..., :-2]], axis=-1)
-  out = out + jnp.concatenate([du[..., :-1] * v[..., 1:], zeros_1], axis=-1)
-  out = out + jnp.concatenate([dw[..., :-2] * v[..., 2:], zeros_2], axis=-1)
-  return out
-
-
 def pentadiagonal_solve(
     ds: ArrayLike, dl: ArrayLike, d: ArrayLike,
     du: ArrayLike, dw: ArrayLike, b: ArrayLike) -> Array:
@@ -228,18 +214,6 @@ def _pentadiagonal_solve_shape_rule(
   return b_shape
 
 
-def _pentadiagonal_solve_jax_fallback(ds, dl, d, du, dw, b):
-  """Pure-JAX fallback: reconstruct dense matrix and use LU solve."""
-  n = d.shape[-1]
-  # Build full n x n matrix from the five diagonals.
-  A = jnp.diag(d)
-  A = A.at[jnp.arange(1, n), jnp.arange(n - 1)].add(dl[1:])
-  A = A.at[jnp.arange(2, n), jnp.arange(n - 2)].add(ds[2:])
-  A = A.at[jnp.arange(n - 1), jnp.arange(1, n)].add(du[:n - 1])
-  A = A.at[jnp.arange(n - 2), jnp.arange(2, n)].add(dw[:n - 2])
-  return jnp.linalg.solve(A, b)
-
-
 def _pentadiagonal_solve_cpu_gpu_lowering(
     ctx, ds, dl, d, du, dw, b, *, target_name_prefix: str):
   d_aval = ctx.avals_in[2]
@@ -249,6 +223,20 @@ def _pentadiagonal_solve_cpu_gpu_lowering(
     target_name = f"{target_name_prefix}sparse_gpsvInterleaved_ffi"
   rule = _jax_ffi.ffi_lowering(target_name)
   return rule(ctx, ds, dl, d, du, dw, b)
+
+
+def _penta_matvec(ds, dl, d, du, dw, v):
+  """Apply the pentadiagonal matrix A to vector v: returns A @ v."""
+  zeros_1 = jnp.zeros_like(v[..., :1])
+  zeros_2 = jnp.zeros_like(v[..., :2])
+  # Row i contribution: ds[i]*v[i-2] + dl[i]*v[i-1] + d[i]*v[i]
+  #                   + du[i]*v[i+1] + dw[i]*v[i+2]
+  out = d * v
+  out = out + jnp.concatenate([zeros_1, dl[..., 1:] * v[..., :-1]], axis=-1)
+  out = out + jnp.concatenate([zeros_2, ds[..., 2:] * v[..., :-2]], axis=-1)
+  out = out + jnp.concatenate([du[..., :-1] * v[..., 1:], zeros_1], axis=-1)
+  out = out + jnp.concatenate([dw[..., :-2] * v[..., 2:], zeros_2], axis=-1)
+  return out
 
 
 def _pentadiagonal_solve_jvp(primals, tangents):
@@ -294,9 +282,25 @@ def _pentadiagonal_solve_transpose(ct, ds, dl, d, du, dw, b):
   return [None, None, None, None, None, ct_b]
 
 
+def _pentadiagonal_solve_jax_fallback(ds, dl, d, du, dw, b):
+  """Pure-JAX fallback: reconstruct dense matrix and use LU solve."""
+  n = d.shape[-1]
+  # Build full n x n matrix from the five diagonals.
+  A = jnp.diag(d)
+  A = A.at[jnp.arange(1, n), jnp.arange(n - 1)].add(dl[1:])
+  A = A.at[jnp.arange(2, n), jnp.arange(n - 2)].add(ds[2:])
+  A = A.at[jnp.arange(n - 1), jnp.arange(1, n)].add(du[:n - 1])
+  A = A.at[jnp.arange(n - 2), jnp.arange(2, n)].add(dw[:n - 2])
+  return jnp.linalg.solve(A, b)
+
+
 pentadiagonal_solve_p = standard_linalg_primitive(
     (_float | _complex,) * 6, (1, 1, 1, 1, 1, 1),
     _pentadiagonal_solve_shape_rule, "pentadiagonal_solve")
+
+# Register JVP and transpose rules.
+ad.primitive_jvps[pentadiagonal_solve_p] = _pentadiagonal_solve_jvp
+ad.primitive_transposes[pentadiagonal_solve_p] = _pentadiagonal_solve_transpose
 
 # Register pure-JAX fallback lowering (used on TPU / platforms without FFI).
 mlir.register_lowering(pentadiagonal_solve_p, mlir.lower_fun(
@@ -305,7 +309,3 @@ mlir.register_lowering(pentadiagonal_solve_p, mlir.lower_fun(
 # Register CPU (LAPACK gbsv) and GPU (cuSPARSE gpsvInterleavedBatch) lowerings.
 register_cpu_gpu_lowering(pentadiagonal_solve_p,
                           _pentadiagonal_solve_cpu_gpu_lowering)
-
-# Register JVP and transpose rules.
-ad.primitive_jvps[pentadiagonal_solve_p] = _pentadiagonal_solve_jvp
-ad.primitive_transposes[pentadiagonal_solve_p] = _pentadiagonal_solve_transpose
