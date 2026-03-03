@@ -247,7 +247,7 @@ def _pentadiagonal_solve_cpu_gpu_lowering(
     target_name = lapack.prepare_lapack_call("gbsv_ffi", d_aval.dtype)
   else:
     target_name = f"{target_name_prefix}sparse_gpsvInterleaved_ffi"
-  rule = _jax_ffi.ffi_lowering(target_name, operand_output_aliases={0: 5})
+  rule = _jax_ffi.ffi_lowering(target_name)
   return rule(ctx, ds, dl, d, du, dw, b)
 
 
