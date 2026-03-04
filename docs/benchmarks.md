@@ -1,5 +1,35 @@
 # Benchmarks
 
+## Pentadiagonal solve
+
+Comparison of `pentadiagonal_solve` (LAPACK `gbsv`) and
+`pentadiagonal_solveh` (LAPACK `pbsv`) against dense solvers and scipy's
+banded solvers for SPD pentadiagonal systems (float64, CPU):
+
+| Method                  | Implementation                                                       |
+| ----------------------- | -------------------------------------------------------------------- |
+| **jaxtra (gbsv)**       | `pentadiagonal_solve` — LAPACK `dgbsv`, O(kn) banded LU (k=2)        |
+| **jaxtra (pbsv)**       | `pentadiagonal_solveh` — LAPACK `dpbsv`, O(kn) banded Cholesky (k=2) |
+| **dense LU**            | `jnp.linalg.solve` — O(n³) dense LU                                  |
+| **JAX Cholesky**        | `jax.scipy.linalg.cho_factor` + `cho_solve` — O(n³) dense Cholesky   |
+| **scipy solveh_banded** | `scipy.linalg.solveh_banded` — O(kn) banded Cholesky                 |
+| **scipy solve_banded**  | `scipy.linalg.solve_banded` — O(kn) general banded LU                |
+
+All JAX timings use `jax.jit` + `jax.block_until_ready` with two warmup runs
+followed by five timed repetitions; the reported value is the median.
+Run `python benchmarks/bench_banded.py` to reproduce; results are written to
+`benchmarks/results/bench_banded.csv` and `benchmarks/results/bench_banded.png`.
+
+```{figure} ../benchmarks/results/bench_banded.png
+:alt: Benchmark: pentadiagonal_solve vs dense LU vs scipy banded
+:width: 90%
+:align: center
+```
+
+---
+
+## ORMQR least-squares
+
 Comparison of jaxtra's ORMQR-based least-squares solver against two
 alternatives on an overdetermined system **A x ≈ b** (float64, CPU):
 

@@ -58,4 +58,77 @@ extern template struct OrthogonalQrMultiply<ffi::DataType::F64>;
 extern template struct OrthogonalQrMultiply<ffi::DataType::C64>;
 extern template struct OrthogonalQrMultiply<ffi::DataType::C128>;
 
+// ---------------------------------------------------------------------------
+// PentadiagonalSolve<dtype>
+// ---------------------------------------------------------------------------
+// Solves A X = B for X where A is a pentadiagonal matrix given by five
+// diagonals: ds (offset -2), dl (offset -1), d (main), du (offset +1),
+// dw (offset +2).  Uses LAPACK gbsv (banded LU).
+//
+// Diagonal convention (matching cuSparse gpsvInterleavedBatch):
+//   ds[i] = A[i, i-2]   (unused for i < 2)
+//   dl[i] = A[i, i-1]   (unused for i < 1)
+//   d[i]  = A[i, i]
+//   du[i] = A[i, i+1]   (unused for i = n-1)
+//   dw[i] = A[i, i+2]   (unused for i >= n-2)
+template <ffi::DataType dtype>
+struct PentadiagonalSolve {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for [sdcz]gbsv.
+  using FnType = void(int* /*n*/, int* /*kl*/, int* /*ku*/, int* /*nrhs*/,
+                      ValueType* /*ab*/, int* /*ldab*/, int* /*ipiv*/,
+                      ValueType* /*b*/, int* /*ldb*/, int* /*info*/);
+
+  // Function pointer; nullptr until initialize() is called.
+  inline static FnType* fn = nullptr;
+
+  // Solve A x = b for x, b_out is a copy of b on entry and holds x on exit.
+  static ffi::Error Kernel(ffi::Buffer<dtype> ds, ffi::Buffer<dtype> dl,
+                            ffi::Buffer<dtype> d,  ffi::Buffer<dtype> du,
+                            ffi::Buffer<dtype> dw, ffi::Buffer<dtype> b,
+                            ffi::ResultBuffer<dtype> b_out);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct PentadiagonalSolve<ffi::DataType::F32>;
+extern template struct PentadiagonalSolve<ffi::DataType::F64>;
+extern template struct PentadiagonalSolve<ffi::DataType::C64>;
+extern template struct PentadiagonalSolve<ffi::DataType::C128>;
+
+// ---------------------------------------------------------------------------
+// HermitianPentadiagonalSolve<dtype>
+// ---------------------------------------------------------------------------
+// Solves A X = B for X where A is a Hermitian (symmetric for real types)
+// pentadiagonal matrix given by its upper triangle: d (main diagonal),
+// du (offset +1), dw (offset +2).  Uses LAPACK pbsv (banded Cholesky, KD=2).
+//
+// Diagonal convention (upper triangle only):
+//   d[i]  = A[i, i]
+//   du[i] = A[i, i+1]   (unused for i = n-1)
+//   dw[i] = A[i, i+2]   (unused for i >= n-2)
+template <ffi::DataType dtype>
+struct HermitianPentadiagonalSolve {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for [sdcz]pbsv.
+  using FnType = void(char* /*uplo*/, int* /*n*/, int* /*kd*/, int* /*nrhs*/,
+                      ValueType* /*ab*/, int* /*ldab*/,
+                      ValueType* /*b*/, int* /*ldb*/, int* /*info*/);
+
+  // Function pointer; nullptr until initialize() is called.
+  inline static FnType* fn = nullptr;
+
+  // Solve A x = b for x, b_out is a copy of b on entry and holds x on exit.
+  static ffi::Error Kernel(ffi::Buffer<dtype> d,  ffi::Buffer<dtype> du,
+                            ffi::Buffer<dtype> dw, ffi::Buffer<dtype> b,
+                            ffi::ResultBuffer<dtype> b_out);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct HermitianPentadiagonalSolve<ffi::DataType::F32>;
+extern template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
+extern template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
+extern template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
+
 }  // namespace jaxtra

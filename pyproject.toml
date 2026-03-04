@@ -41,6 +41,7 @@ gpu = [
   "nvidia-cuda-runtime-cu12>=12.0; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 test = ["pytest"]
+benchmark = ["matplotlib", "pandas"]
 docs = [
   "sphinx>=7.3",
   "sphinx-book-theme>=1.1",
@@ -119,6 +120,7 @@ doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE"]
 dev-dependencies = [
   "scikit-build-core>=0.9",
   "nanobind>=2.0",
+  "cmake>=3.20",
 ]
 
 # ---------------------------------------------------------------------------

@@ -334,6 +334,20 @@ typedef cusparseDnVecDescr_t gpusparseDnVecDescr_t;
 #define gpusparseCgtsv2StridedBatch cusparseCgtsv2StridedBatch
 #define gpusparseZgtsv2StridedBatch cusparseZgtsv2StridedBatch
 
+// Pentadiagonal solve: gpsvInterleavedBatch (CUDA >= 10.2)
+#define gpusparseSgpsvInterleavedBatch cusparseSgpsvInterleavedBatch
+#define gpusparseDgpsvInterleavedBatch cusparseDgpsvInterleavedBatch
+#define gpusparseCgpsvInterleavedBatch cusparseCgpsvInterleavedBatch
+#define gpusparseZgpsvInterleavedBatch cusparseZgpsvInterleavedBatch
+#define gpusparseSgpsvInterleavedBatch_bufferSizeExt \
+  cusparseSgpsvInterleavedBatch_bufferSizeExt
+#define gpusparseDgpsvInterleavedBatch_bufferSizeExt \
+  cusparseDgpsvInterleavedBatch_bufferSizeExt
+#define gpusparseCgpsvInterleavedBatch_bufferSizeExt \
+  cusparseCgpsvInterleavedBatch_bufferSizeExt
+#define gpusparseZgpsvInterleavedBatch_bufferSizeExt \
+  cusparseZgpsvInterleavedBatch_bufferSizeExt
+
 #define GPUSPARSE_INDEX_16U CUSPARSE_INDEX_16U
 #define GPUSPARSE_INDEX_32I CUSPARSE_INDEX_32I
 #define GPUSPARSE_INDEX_64I CUSPARSE_INDEX_64I
