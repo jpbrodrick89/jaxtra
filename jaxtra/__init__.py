@@ -11,6 +11,10 @@ Currently exposed:
                       by LAPACK ``gbsv`` (CPU) and cuSPARSE
                       ``gpsvInterleavedBatch`` (GPU), available at
                       ``jaxtra.lax.linalg.pentadiagonal_solve``.
+  • ``pentadiagonal_solveh`` — Hermitian/SPD pentadiagonal solve A x = b, backed
+                      by LAPACK ``pbsv`` (CPU, banded Cholesky) and cuSPARSE
+                      ``gpsvInterleavedBatch`` (GPU), available at
+                      ``jaxtra.lax.linalg.pentadiagonal_solveh``.
 
 Quick start
 -----------

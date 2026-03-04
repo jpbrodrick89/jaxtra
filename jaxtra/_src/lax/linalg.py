@@ -356,3 +356,161 @@ def _pentadiagonal_solve_batching_rule(batched_args, batch_dims):
 
 batching.primitive_batchers[pentadiagonal_solve_p] = (
     _pentadiagonal_solve_batching_rule)
+
+
+# ---------------------------------------------------------------------------
+# Hermitian pentadiagonal solve
+# ---------------------------------------------------------------------------
+#
+# Upper-triangle convention (matching LAPACK pbsv UPLO='U'):
+#   d[i]  = A[i, i]
+#   du[i] = A[i, i+1]   (element du[n-1] is unused / padding)
+#   dw[i] = A[i, i+2]   (elements dw[n-2], dw[n-1] are unused / padding)
+#
+# Lower triangle is implied: A[i, i-1] = conj(du[i-1]), A[i, i-2] = conj(dw[i-2]).
+#
+# Solves A x = b, returning x with the same shape as b.
+
+
+def _hermitian_lower_diags(du, dw):
+  """Reconstruct lower diagonals from upper diagonals of a Hermitian matrix."""
+  is_complex = dtypes.issubdtype(du.dtype, np.complexfloating)
+  conj = lax.conj if is_complex else lambda x: x
+  z1 = lax.full_like(du, 0, shape=du.shape[:-1] + (1,))
+  z2 = lax.full_like(dw, 0, shape=dw.shape[:-1] + (2,))
+  dl = lax.concatenate([z1, conj(du[..., :-1])],
+                       dimension=len(du.shape) - 1)
+  ds = lax.concatenate([z2, conj(dw[..., :-2])],
+                       dimension=len(dw.shape) - 1)
+  return ds, dl
+
+
+def pentadiagonal_solveh(
+    d: ArrayLike, du: ArrayLike, dw: ArrayLike,
+    b: ArrayLike) -> Array:
+  """Solve a Hermitian pentadiagonal linear system A X = B.
+
+  The matrix A is Hermitian (symmetric for real types) and stored as its
+  upper-triangle diagonals following the LAPACK ``pbsv`` convention::
+
+      A[i, i]   = d[i]
+      A[i, i+1] = du[i]   (du[n-1] unused)
+      A[i, i+2] = dw[i]   (dw[n-2], dw[n-1] unused)
+
+  The lower triangle is implied: ``A[i, i-1] = conj(du[i-1])``,
+  ``A[i, i-2] = conj(dw[i-2])``.
+
+  Args:
+    d: Main diagonal of A with shape ``[..., n]``.
+    du: First super-diagonal of A with shape ``[..., n]``.
+    dw: Second super-diagonal of A with shape ``[..., n]``.
+    b: Right-hand side matrix with shape ``[..., n, k]``.
+
+  Returns:
+    Solution X with the same shape as b.
+  """
+  d, du, dw, b = core.standard_insert_pvary(d, du, dw, b)
+  return pentadiagonal_solveh_p.bind(d, du, dw, b)
+
+
+def _pentadiagonal_solveh_shape_rule(d_shape, du_shape, dw_shape, b_shape):
+  if not (d_shape == du_shape == dw_shape):
+    raise TypeError(
+        "pentadiagonal_solveh requires that all diagonal arguments have the "
+        "same shape, got d={}, du={}, dw={}".format(d_shape, du_shape, dw_shape))
+  if d_shape != b_shape[:-1]:
+    raise TypeError(
+        "pentadiagonal_solveh requires that the leading ndim-1 dimensions of b "
+        "equal the dimensions of the diagonal arguments.")
+  return b_shape
+
+
+def _pentadiagonal_solveh_cpu_lowering(ctx, d, du, dw, b, **kwargs):
+  del kwargs
+  d_aval = ctx.avals_in[0]
+  target_name = lapack.prepare_lapack_call("pbsv_ffi", d_aval.dtype)
+  rule = _linalg_ffi_lowering(target_name, operand_output_aliases={3: 0})
+  return rule(ctx, d, du, dw, b)
+
+
+def _pentadiagonal_solveh_fallback(d, du, dw, b):
+  """Reconstruct full pentadiagonal and delegate to pentadiagonal_solve."""
+  ds, dl = _hermitian_lower_diags(du, dw)
+  return pentadiagonal_solve(ds, dl, d, du, dw, b)
+
+
+def _pentadiagonal_solveh_jvp(primals, tangents):
+  d, du, dw, b = primals
+  dd, ddu, ddw, db = tangents
+
+  x = pentadiagonal_solveh_p.bind(d, du, dw, b)
+
+  # Replace Zero tangents with actual zeros.
+  z = lambda t, ref: jnp.zeros_like(ref) if type(t) is ad.Zero else t
+  dd = z(dd, d); ddu = z(ddu, du); ddw = z(ddw, dw); db = z(db, b)
+
+  # Build lower-triangle tangent diagonals from upper tangents.
+  dds, ddl = _hermitian_lower_diags(ddu, ddw)
+
+  # dA @ x
+  dAx = _pentadiagonal_product(dds, ddl, dd, ddu, ddw, x)
+
+  # dx = A^{-1} (db - dA x)
+  dx = pentadiagonal_solveh_p.bind(d, du, dw, db - dAx)
+  return x, dx
+
+
+def _pentadiagonal_solveh_transpose(ct, d, du, dw, b):
+  # ct is the cotangent of x = A^{-1} b.
+  # We need ct_b = A^{-T} ct.
+  # For real symmetric: A^T = A, so ct_b = A^{-1} ct.
+  # For complex Hermitian: A^T = conj(A), so A^{-T} = conj(A)^{-1}.
+  # conj(A) is Hermitian with upper diags conj(d), conj(du), conj(dw).
+  is_complex = dtypes.issubdtype(d.dtype, np.complexfloating)
+  if is_complex:
+    ct_b = pentadiagonal_solveh_p.bind(
+        lax.conj(d), lax.conj(du), lax.conj(dw), ct)
+  else:
+    ct_b = pentadiagonal_solveh_p.bind(d, du, dw, ct)
+  return [None, None, None, ct_b]
+
+
+pentadiagonal_solveh_p = standard_linalg_primitive(
+    (_float | _complex,) * 4, (1, 1, 1, 2),
+    _pentadiagonal_solveh_shape_rule, "pentadiagonal_solveh")
+
+# Register JVP and transpose rules.
+ad.primitive_jvps[pentadiagonal_solveh_p] = _pentadiagonal_solveh_jvp
+ad.primitive_transposes[pentadiagonal_solveh_p] = (
+    _pentadiagonal_solveh_transpose)
+
+# Register fallback lowering (reconstructs lower diags, calls pentadiagonal_solve).
+mlir.register_lowering(pentadiagonal_solveh_p, mlir.lower_fun(
+    _pentadiagonal_solveh_fallback, multiple_results=False))
+
+# Register CPU lowering (LAPACK pbsv — banded Cholesky, faster than gbsv).
+mlir.register_lowering(pentadiagonal_solveh_p,
+                        _pentadiagonal_solveh_cpu_lowering, platform='cpu')
+
+
+def _pentadiagonal_solveh_batching_rule(batched_args, batch_dims):
+  d, du, dw, b = batched_args
+  bd, bdu, bdw, bb = batch_dims
+  if all(dim is batching.not_mapped for dim in (bd, bdu, bdw)):
+    b = batching.moveaxis(b, bb, -2)
+    b_flat = b.reshape(
+        b.shape[:-3] + (b.shape[-3], b.shape[-2] * b.shape[-1]))
+    bdim_out = b.ndim - 2
+    out_flat = pentadiagonal_solveh(d, du, dw, b_flat)
+    return out_flat.reshape(b.shape), bdim_out
+  else:
+    size = next(t.shape[i] for t, i in zip(batched_args, batch_dims)
+                if i is not None)
+    d  = batching.bdim_at_front(d,  bd,  size)
+    du = batching.bdim_at_front(du, bdu, size)
+    dw = batching.bdim_at_front(dw, bdw, size)
+    b  = batching.bdim_at_front(b,  bb,  size)
+    return pentadiagonal_solveh(d, du, dw, b), 0
+
+batching.primitive_batchers[pentadiagonal_solveh_p] = (
+    _pentadiagonal_solveh_batching_rule)

@@ -3,8 +3,9 @@ Benchmark: jaxtra pentadiagonal_solve vs dense solvers vs scipy banded
 =======================================================================
 For an SPD pentadiagonal system A x = b of size n×n:
 
-  jaxtra              : pentadiagonal_solve  (LAPACK gbsv / cuSPARSE gpsvInterleavedBatch)
-  dense LU            : jnp.linalg.solve     (O(n^3), dense)
+  jaxtra gbsv         : pentadiagonal_solve   (LAPACK gbsv / cuSPARSE gpsvInterleavedBatch)
+  jaxtra pbsv         : pentadiagonal_solveh  (LAPACK pbsv — banded Cholesky, O(kn), k=2)
+  dense LU            : jnp.linalg.solve      (O(n^3), dense)
   JAX Cholesky        : jax.scipy.linalg.cho_factor + cho_solve  (O(n^3), dense)
   scipy banded        : scipy.linalg.solveh_banded  (banded Cholesky, O(kn), k=2)
   scipy solve_banded  : scipy.linalg.solve_banded   (general banded LU, O(kn), k=2)
@@ -32,7 +33,7 @@ import jax.numpy as jnp
 import jax.scipy.linalg as jax_linalg
 from scipy import linalg as scipy_linalg
 
-from jaxtra._src.lax.linalg import pentadiagonal_solve
+from jaxtra._src.lax.linalg import pentadiagonal_solve, pentadiagonal_solveh
 
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -45,6 +46,12 @@ RESULTS_DIR.mkdir(exist_ok=True)
 def _jaxtra_solve(ds, dl, d, du, dw, b):
     """Pentadiagonal solve via jaxtra (LAPACK gbsv / cuSPARSE)."""
     return pentadiagonal_solve(ds, dl, d, du, dw, b)
+
+
+@jax.jit
+def _jaxtra_solveh(d, du, dw, b):
+    """Hermitian pentadiagonal solve via jaxtra (LAPACK pbsv)."""
+    return pentadiagonal_solveh(d, du, dw, b)
 
 
 @jax.jit
@@ -161,6 +168,7 @@ N_REPEAT = 5
 
 METHODS = [
     ("jaxtra (gbsv)",       "#1f77b4", "o"),
+    ("jaxtra (pbsv)",       "#17becf", "p"),
     ("dense LU",            "#ff7f0e", "s"),
     ("JAX Cholesky",        "#9467bd", "D"),
     ("scipy solveh_banded", "#2ca02c", "^"),
@@ -173,10 +181,10 @@ METHODS = [
 
 records = []
 
-print(f"\n{'n':>7}  {'jaxtra (ms)':>12}  {'dense LU (ms)':>14}  "
+print(f"\n{'n':>7}  {'gbsv (ms)':>10}  {'pbsv (ms)':>10}  {'dense LU (ms)':>14}  "
       f"{'JAX Chol (ms)':>14}  {'solveh_bnd (ms)':>16}  {'solve_bnd (ms)':>15}  "
-      f"{'vs dense':>9}  {'vs s_bnd':>9}")
-print("-" * 110)
+      f"{'pbsv/solveh':>12}")
+print("-" * 120)
 
 for n in SIZES:
     ds_np, dl_np, d_np, du_np, dw_np, b_np, A_dense, ab_upper, ab_banded = make_spd_penta(n)
@@ -195,6 +203,8 @@ for n in SIZES:
 
     t_jaxtra    = time_jax_fn(_jaxtra_solve, ds_j, dl_j, d_j, du_j, dw_j, b_j_2d,
                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_pbsv      = time_jax_fn(_jaxtra_solveh, d_j, du_j, dw_j, b_j_2d,
+                               n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_dense     = time_jax_fn(_dense_solve, A_j, b_j,
                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_jax_chol  = time_jax_fn(_jax_cholesky_solve, A_j, b_j,
@@ -205,19 +215,20 @@ for n in SIZES:
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
     records.append({"n": n, "method": "jaxtra (gbsv)",       "time_ms": t_jaxtra    * 1e3})
+    records.append({"n": n, "method": "jaxtra (pbsv)",       "time_ms": t_pbsv      * 1e3})
     records.append({"n": n, "method": "dense LU",            "time_ms": t_dense     * 1e3})
     records.append({"n": n, "method": "JAX Cholesky",        "time_ms": t_jax_chol  * 1e3})
     records.append({"n": n, "method": "scipy solveh_banded", "time_ms": t_solveh    * 1e3})
     records.append({"n": n, "method": "scipy solve_banded",  "time_ms": t_solve_bnd * 1e3})
 
     print(f"{n:>7d}  "
-          f"{t_jaxtra*1e3:12.2f}  "
+          f"{t_jaxtra*1e3:10.2f}  "
+          f"{t_pbsv*1e3:10.2f}  "
           f"{t_dense*1e3:14.2f}  "
           f"{t_jax_chol*1e3:14.2f}  "
           f"{t_solveh*1e3:16.2f}  "
           f"{t_solve_bnd*1e3:15.2f}  "
-          f"{t_dense/t_jaxtra:9.2f}x  "
-          f"{t_solveh/t_jaxtra:9.2f}x")
+          f"{t_solveh/t_pbsv:12.2f}x")
 
 # ---------------------------------------------------------------------------
 # Write CSV

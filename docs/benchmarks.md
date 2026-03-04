@@ -2,14 +2,18 @@
 
 ## Pentadiagonal solve
 
-Comparison of `pentadiagonal_solve` (LAPACK `gbsv`) against dense LU and
-scipy's banded Cholesky for SPD pentadiagonal systems (float64, CPU):
+Comparison of `pentadiagonal_solve` (LAPACK `gbsv`) and
+`pentadiagonal_solveh` (LAPACK `pbsv`) against dense solvers and scipy's
+banded solvers for SPD pentadiagonal systems (float64, CPU):
 
-| Method            | Implementation                                                |
-| ----------------- | ------------------------------------------------------------- |
-| **jaxtra (gbsv)** | `pentadiagonal_solve` — LAPACK `dgbsv`, O(kn) banded LU (k=2) |
-| **dense LU**      | `jnp.linalg.solve` — O(n³) dense LU                           |
-| **scipy banded**  | `scipy.linalg.solveh_banded` — O(kn) banded Cholesky          |
+| Method                  | Implementation                                                       |
+| ----------------------- | -------------------------------------------------------------------- |
+| **jaxtra (gbsv)**       | `pentadiagonal_solve` — LAPACK `dgbsv`, O(kn) banded LU (k=2)        |
+| **jaxtra (pbsv)**       | `pentadiagonal_solveh` — LAPACK `dpbsv`, O(kn) banded Cholesky (k=2) |
+| **dense LU**            | `jnp.linalg.solve` — O(n³) dense LU                                  |
+| **JAX Cholesky**        | `jax.scipy.linalg.cho_factor` + `cho_solve` — O(n³) dense Cholesky   |
+| **scipy solveh_banded** | `scipy.linalg.solveh_banded` — O(kn) banded Cholesky                 |
+| **scipy solve_banded**  | `scipy.linalg.solve_banded` — O(kn) general banded LU                |
 
 All JAX timings use `jax.jit` + `jax.block_until_ready` with two warmup runs
 followed by five timed repetitions; the reported value is the median.
