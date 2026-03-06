@@ -34,4 +34,5 @@ pip install "jaxtra[gpu]"     # + NVIDIA cuSOLVER runtime libs
 
 api
 benchmarks
+benchmarks_ldl
 ```

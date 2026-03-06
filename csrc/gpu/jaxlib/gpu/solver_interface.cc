@@ -65,6 +65,35 @@ JAX_GPU_DEFINE_ORMQR(gpuComplex, gpusolverDnCunmqr);
 JAX_GPU_DEFINE_ORMQR(gpuDoubleComplex, gpusolverDnZunmqr);
 #undef JAX_GPU_DEFINE_ORMQR
 
+// Symmetric/complex-symmetric indefinite factorization: sytrf
+// cuSolver provides all four dtype variants (S/D/C/Z).
+
+#ifdef JAX_GPU_CUDA
+#define JAX_GPU_DEFINE_SYTRF(Type, Name)                                      \
+  template <>                                                                 \
+  absl::StatusOr<int> SytrfBufferSize<Type>(gpusolverDnHandle_t handle,      \
+                                            int n, Type *a, int lda) {       \
+    int lwork;                                                                \
+    JAX_RETURN_IF_ERROR(JAX_AS_STATUS(Name##_bufferSize(handle, n, a, lda,   \
+                                                         &lwork)));           \
+    return lwork;                                                             \
+  }                                                                           \
+  template <>                                                                 \
+  absl::Status Sytrf<Type>(gpusolverDnHandle_t handle,                       \
+                            gpusolverFillMode_t uplo, int n, Type *a,        \
+                            int lda, int *ipiv, Type *work, int lwork,       \
+                            int *info) {                                      \
+    return JAX_AS_STATUS(                                                     \
+        Name(handle, uplo, n, a, lda, ipiv, work, lwork, info));             \
+  }
+
+JAX_GPU_DEFINE_SYTRF(float,           gpusolverDnSsytrf);
+JAX_GPU_DEFINE_SYTRF(double,          gpusolverDnDsytrf);
+JAX_GPU_DEFINE_SYTRF(gpuComplex,      gpusolverDnCsytrf);
+JAX_GPU_DEFINE_SYTRF(gpuDoubleComplex, gpusolverDnZsytrf);
+#undef JAX_GPU_DEFINE_SYTRF
+#endif  // JAX_GPU_CUDA
+
 }  // namespace solver
 }  // namespace JAX_GPU_NAMESPACE
 }  // namespace jax

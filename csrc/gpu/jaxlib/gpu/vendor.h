@@ -278,6 +278,14 @@ typedef cusparseDnVecDescr_t gpusparseDnVecDescr_t;
 #define gpusolverDnDsytrd cusolverDnDsytrd
 #define gpusolverDnChetrd cusolverDnChetrd
 #define gpusolverDnZhetrd cusolverDnZhetrd
+#define gpusolverDnSsytrf_bufferSize cusolverDnSsytrf_bufferSize
+#define gpusolverDnDsytrf_bufferSize cusolverDnDsytrf_bufferSize
+#define gpusolverDnCsytrf_bufferSize cusolverDnCsytrf_bufferSize
+#define gpusolverDnZsytrf_bufferSize cusolverDnZsytrf_bufferSize
+#define gpusolverDnSsytrf cusolverDnSsytrf
+#define gpusolverDnDsytrf cusolverDnDsytrf
+#define gpusolverDnCsytrf cusolverDnCsytrf
+#define gpusolverDnZsytrf cusolverDnZsytrf
 
 #define GPUSOLVER_FILL_MODE_LOWER CUBLAS_FILL_MODE_LOWER
 #define GPUSOLVER_FILL_MODE_UPPER CUBLAS_FILL_MODE_UPPER
