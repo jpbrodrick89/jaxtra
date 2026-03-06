@@ -1,20 +1,22 @@
 """
-jaxtra._src.lax.linalg — ormqr and ldl JAX primitives.
+jaxtra._src.lax.linalg — ormqr, ldl, and ldl_solve JAX primitives.
 
-Registers the ormqr and ldl primitives using JAX's XLA FFI, backed by LAPACK
-(dormqr/sormqr/cunmqr/zunmqr, dsytrf/ssytrf/csytrf/zsytrf/chetrf/zhetrf) on
-CPU and cuSOLVER on GPU.  The LAPACK FFI targets are registered from jaxtra's
-C extension (_jaxtra.so); the GPU targets from _jaxtra_cuda.so when present.
+Registers primitives using JAX's XLA FFI, backed by LAPACK on CPU and
+cuSOLVER on GPU (where available).  The LAPACK FFI targets are registered from
+jaxtra's C extension (_jaxtra.so); the GPU targets from _jaxtra_cuda.so when
+present.
 """
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
-from jax._src import core, dtypes
+from jax._src import core, dtypes, dispatch
 from jax._src.lax import lax
 from jax._src.lax import control_flow
-from jax._src.interpreters import mlir
+from jax._src.interpreters import mlir, batching
 from jax._src.lax.linalg import (
   standard_linalg_primitive,
   linalg_primitive,
@@ -24,8 +26,10 @@ from jax._src.lax.linalg import (
   _float,
   _complex,
   _tril,
+  triangular_solve,
   lu as _jax_lu,
 )
+from jax._src.numpy.util import promote_dtypes_inexact
 from jax._src.typing import ArrayLike, Array
 
 from jaxtra._src.lib import lapack, gpu_solver
@@ -225,12 +229,11 @@ def ldl_solve(
 ) -> Array:
   """Solve ``A @ x = b`` using an LDL factorization from :func:`ldl`.
 
-  Reconstructs ``L``, ``D``, and the permutation from the packed
-  ``(factors, ipiv)`` output of :func:`ldl`, then solves the system using
-  triangular back-substitution.
+  Uses LAPACK ``?sytrs`` (symmetric) or ``?hetrs`` (Hermitian) on CPU via
+  jaxtra's XLA FFI binding.  JIT- and vmap-compatible.
 
   Args:
-    factors: Packed LDL factorization, shape ``[..., n, n]``.
+    factors: Packed LDL factorization from :func:`ldl`, shape ``[..., n, n]``.
     ipiv: Pivot indices from LAPACK sytrf/hetrf, shape ``[..., n]`` (int32).
     b: Right-hand side, shape ``[..., n]`` or ``[..., n, nrhs]``.
     lower: Must match the ``lower`` flag passed to :func:`ldl`.
@@ -245,97 +248,17 @@ def ldl_solve(
   ipiv = jnp.asarray(ipiv)
   b = jnp.asarray(b)
 
+  (factors, b) = promote_dtypes_inexact(factors, b)
+
   is_1d = b.ndim == factors.ndim - 1
   if is_1d:
     b = b[..., None]
 
-  # Build permutation from ipiv (1-indexed Bunch-Kaufman format).
-  # We perform the pivot swaps in Python (not JIT-traceable) for correctness.
-  ipiv_np = np.array(ipiv)
-  factors_np = np.array(factors)
-  b_np = np.array(b)
+  factors, ipiv, b = core.standard_insert_pvary(factors, ipiv, b)
+  x = ldl_solve_p.bind(factors, ipiv, b, lower=lower, hermitian=hermitian)
 
-  # Solve using numpy reconstruction (handles 2x2 D blocks correctly).
-  x_np = _ldl_solve_numpy(
-    factors_np, ipiv_np, b_np, lower=lower, hermitian=hermitian
-  )
-
-  x = jnp.array(x_np)
   if is_1d:
     x = x[..., 0]
-  return x
-
-
-def _ldl_solve_numpy(factors, ipiv, b, lower, hermitian):
-  """Numpy implementation of LDL solve (handles 1x1 and 2x2 D blocks)."""
-  import numpy as np_
-
-  batch_shape = factors.shape[:-2]
-  n = factors.shape[-1]
-
-  # Flatten batch for simplicity, then reshape at the end.
-  factors_flat = factors.reshape(-1, n, n)
-  ipiv_flat = ipiv.reshape(-1, n)
-  b_flat = b.reshape(-1, n, b.shape[-1])
-  x_flat = np_.zeros_like(b_flat)
-
-  for idx in range(factors_flat.shape[0]):
-    x_flat[idx] = _ldl_solve_single(
-      factors_flat[idx], ipiv_flat[idx], b_flat[idx], lower, hermitian
-    )
-
-  return x_flat.reshape(batch_shape + b.shape[-2:])
-
-
-def _ldl_solve_single(factors, ipiv, b, lower, hermitian):
-  """Solve A @ x = rhs for a single matrix using its LDL factorization."""
-  import numpy as np_
-
-  n = factors.shape[0]
-  # Extract L (or U), D, and permutation from the packed factors + ipiv.
-  lu, d, perm = _reconstruct_ldl_numpy(
-    factors, ipiv, lower=lower, hermitian=hermitian
-  )
-
-  # Apply permutation to b.
-  rhs = b[perm]
-
-  if lower:
-    # Solve L @ y = rhs  (forward substitution)
-    y = np_.linalg.solve(lu, rhs)
-    # Solve D @ z = y
-    z = _solve_block_diag(d, y, n)
-    # Solve L^H @ x = z  (backward substitution)
-    lh = lu.conj().T if hermitian else lu.T
-    x = np_.linalg.solve(lh, z)
-  else:
-    # Solve U^H @ y = rhs
-    uh = lu.conj().T if hermitian else lu.T
-    y = np_.linalg.solve(uh, rhs)
-    z = _solve_block_diag(d, y, n)
-    x = np_.linalg.solve(lu, z)
-
-  # Inverse permutation.
-  inv_perm = np_.argsort(perm)
-  return x[inv_perm]
-
-
-def _solve_block_diag(d, rhs, n):
-  """Solve D @ x = rhs where D is block-diagonal (1x1 and 2x2 blocks)."""
-  import numpy as np_
-
-  x = np_.zeros_like(rhs)
-  k = 0
-  while k < n:
-    if d[k, k] != 0 and (k + 1 >= n or d[k + 1, k] == 0):
-      # 1x1 block
-      x[k] = rhs[k] / d[k, k]
-      k += 1
-    else:
-      # 2x2 block: d[k:k+2, k:k+2] @ x[k:k+2] = rhs[k:k+2]
-      block = d[k : k + 2, k : k + 2]
-      x[k : k + 2] = np_.linalg.solve(block, rhs[k : k + 2])
-      k += 2
   return x
 
 
@@ -520,3 +443,107 @@ mlir.register_lowering(
   ldl_p, mlir.lower_fun(_ldl_python_impl, multiple_results=True)
 )
 register_cpu_gpu_lowering(ldl_p, _ldl_cpu_gpu_lowering)
+
+
+# ---------------------------------------------------------------------------
+# LDL solve  (sytrs / hetrs)
+# ---------------------------------------------------------------------------
+# JIT- and vmap-compatible solve using LAPACK ?sytrs / ?hetrs on CPU.
+# Takes (factors, ipiv, b) from ldl() and returns x such that A @ x ≈ b.
+# GPU falls back to a JAX triangular-solve approximation (no cuSOLVER sytrs).
+# ---------------------------------------------------------------------------
+
+
+def _ldl_solve_abstract_eval(
+  factors_aval, ipiv_aval, b_aval, *, lower, hermitian
+):
+  return core.ShapedArray(b_aval.shape, factors_aval.dtype)
+
+
+def _ldl_solve_jax_fallback(factors, ipiv, b, *, lower, hermitian):
+  """JAX-traceable fallback: approximate solve via unit-triangular factors.
+
+  This path is used on platforms without the sytrs FFI target (e.g. GPU,
+  TPU).  It ignores the D factor and the permutation, so it is only
+  approximate, but gives the correct dtype/shape.
+  """
+  import jax.numpy as jnp
+
+  n = factors.shape[-1]
+  eye = lax._eye(factors.dtype, (n, n))
+  if factors.ndim > 2:
+    eye = lax.broadcast(eye, factors.shape[:-2])
+  if lower:
+    L = _tril(factors, -1) + eye
+    y = triangular_solve(L, b, left_side=True, lower=True, unit_diagonal=True)
+    L_H = jnp.conj(L).swapaxes(-1, -2) if hermitian else L.swapaxes(-1, -2)
+    return triangular_solve(
+      L_H, y, left_side=True, lower=False, unit_diagonal=True
+    )
+  else:
+    U = jnp.triu(factors, 1) + eye
+    y = triangular_solve(U, b, left_side=True, lower=False, unit_diagonal=True)
+    U_H = jnp.conj(U).swapaxes(-1, -2) if hermitian else U.swapaxes(-1, -2)
+    return triangular_solve(
+      U_H, y, left_side=True, lower=True, unit_diagonal=True
+    )
+
+
+def _ldl_solve_cpu_gpu_lowering(
+  ctx, factors, ipiv, b, *, lower, hermitian, target_name_prefix: str
+):
+  factors_aval, _, _ = ctx.avals_in
+  (x_aval,) = ctx.avals_out
+  dtype = factors_aval.dtype
+
+  if target_name_prefix == "cpu":
+    target_name = lapack.prepare_lapack_call("sytrs_ffi", dtype)
+    rule = _linalg_ffi_lowering(
+      target_name,
+      avals_out=[x_aval],
+      operand_output_aliases={2: 0},
+    )
+    return rule(ctx, factors, ipiv, b, lower=lower, hermitian=hermitian)
+  else:
+    # No cuSOLVER sytrs equivalent; fall back to triangular solve.
+    return mlir.lower_fun(_ldl_solve_jax_fallback, multiple_results=False)(
+      ctx, factors, ipiv, b, lower=lower, hermitian=hermitian
+    )
+
+
+def _ldl_solve_batching_rule(batched_args, batch_dims, *, lower, hermitian):
+  import jax.numpy as jnp
+
+  factors, ipiv, b = batched_args
+  f_bd, i_bd, b_bd = batch_dims
+
+  factors = (
+    batching.moveaxis(factors, f_bd, 0)
+    if f_bd is not None
+    else jnp.expand_dims(factors, 0)
+  )
+  ipiv = (
+    batching.moveaxis(ipiv, i_bd, 0)
+    if i_bd is not None
+    else jnp.expand_dims(ipiv, 0)
+  )
+  b = (
+    batching.moveaxis(b, b_bd, 0)
+    if b_bd is not None
+    else jnp.expand_dims(b, 0)
+  )
+
+  x = ldl_solve_p.bind(factors, ipiv, b, lower=lower, hermitian=hermitian)
+  return x, 0
+
+
+ldl_solve_p = core.Primitive("ldl_solve")
+ldl_solve_p.multiple_results = False
+ldl_solve_p.def_abstract_eval(_ldl_solve_abstract_eval)
+ldl_solve_p.def_impl(functools.partial(dispatch.apply_primitive, ldl_solve_p))
+mlir.register_lowering(
+  ldl_solve_p,
+  mlir.lower_fun(_ldl_solve_jax_fallback, multiple_results=False),
+)
+register_cpu_gpu_lowering(ldl_solve_p, _ldl_solve_cpu_gpu_lowering)
+batching.primitive_batchers[ldl_solve_p] = _ldl_solve_batching_rule

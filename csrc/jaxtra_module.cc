@@ -53,6 +53,20 @@ void AssignKernelFn(void* fn) {
           .Ret<ffi::Buffer<dtype>>()              /* a_out */          \
           .Ret<ffi::Buffer<ffi::DataType::S32>>()) /* ipiv_out */
 
+// SYTRS — LDL solve (symmetric / Hermitian indefinite).
+// Inputs: factors (packed sytrf output), ipiv (int32), b (rhs).
+// One result buffer: x_out (solution, same dtype as factors/b).
+#define JAXTRA_CPU_DEFINE_SYTRS(name, dtype)                          \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                       \
+      name, LdlSolve<dtype>::Kernel,                                   \
+      ffi::Ffi::Bind()                                                 \
+          .Arg<ffi::Buffer<dtype>>()               /* factors */       \
+          .Arg<ffi::Buffer<ffi::DataType::S32>>()  /* ipiv */         \
+          .Arg<ffi::Buffer<dtype>>()               /* b */             \
+          .Attr<bool>("lower")                                         \
+          .Attr<bool>("hermitian")                                     \
+          .Ret<ffi::Buffer<dtype>>())              /* x_out */
+
 // ---------------------------------------------------------------------------
 // XLA FFI handler bindings (typed API, api_version=1).
 // Names match JAX PR #35104.
@@ -67,6 +81,11 @@ JAXTRA_CPU_DEFINE_SYTRF(lapack_dsytrf_ffi, ffi::DataType::F64);
 JAXTRA_CPU_DEFINE_SYTRF(lapack_csytrf_ffi, ffi::DataType::C64);
 JAXTRA_CPU_DEFINE_SYTRF(lapack_zsytrf_ffi, ffi::DataType::C128);
 
+JAXTRA_CPU_DEFINE_SYTRS(lapack_ssytrs_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_SYTRS(lapack_dsytrs_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_SYTRS(lapack_csytrs_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_SYTRS(lapack_zsytrs_ffi, ffi::DataType::C128);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -79,7 +98,7 @@ void AssignKernelFnHe(void* fn) {
 }
 
 NB_MODULE(_jaxtra, m) {
-  m.doc() = "jaxtra C extension: LAPACK ORMQR and SYTRF/HETRF via XLA FFI";
+  m.doc() = "jaxtra C extension: LAPACK ORMQR, SYTRF/HETRF, SYTRS/HETRS via XLA FFI";
 
   // initialize() — mirrors jaxlib's GetLapackKernelsFromScipy().
   // Imports scipy.linalg.cython_lapack, extracts raw function pointers from
@@ -105,6 +124,14 @@ NB_MODULE(_jaxtra, m) {
     // HETRF — Hermitian (complex only; real types leave fn_he as nullptr)
     AssignKernelFnHe<LdlDecomposition<ffi::DataType::C64>>(lapack_ptr("chetrf"));
     AssignKernelFnHe<LdlDecomposition<ffi::DataType::C128>>(lapack_ptr("zhetrf"));
+    // SYTRS — symmetric solve (real and complex symmetric)
+    AssignKernelFn<LdlSolve<ffi::DataType::F32>>(lapack_ptr("ssytrs"));
+    AssignKernelFn<LdlSolve<ffi::DataType::F64>>(lapack_ptr("dsytrs"));
+    AssignKernelFn<LdlSolve<ffi::DataType::C64>>(lapack_ptr("csytrs"));
+    AssignKernelFn<LdlSolve<ffi::DataType::C128>>(lapack_ptr("zsytrs"));
+    // HETRS — Hermitian solve (complex only; real types leave fn_he as nullptr)
+    AssignKernelFnHe<LdlSolve<ffi::DataType::C64>>(lapack_ptr("chetrs"));
+    AssignKernelFnHe<LdlSolve<ffi::DataType::C128>>(lapack_ptr("zhetrs"));
   });
 
   // registrations() — returns {platform: [(name, capsule, api_version)]}
@@ -126,6 +153,10 @@ NB_MODULE(_jaxtra, m) {
     make_entry("lapack_dsytrf_ffi", reinterpret_cast<void*>(lapack_dsytrf_ffi));
     make_entry("lapack_csytrf_ffi", reinterpret_cast<void*>(lapack_csytrf_ffi));
     make_entry("lapack_zsytrf_ffi", reinterpret_cast<void*>(lapack_zsytrf_ffi));
+    make_entry("lapack_ssytrs_ffi", reinterpret_cast<void*>(lapack_ssytrs_ffi));
+    make_entry("lapack_dsytrs_ffi", reinterpret_cast<void*>(lapack_dsytrs_ffi));
+    make_entry("lapack_csytrs_ffi", reinterpret_cast<void*>(lapack_csytrs_ffi));
+    make_entry("lapack_zsytrs_ffi", reinterpret_cast<void*>(lapack_zsytrs_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });

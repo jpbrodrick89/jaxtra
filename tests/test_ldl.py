@@ -178,35 +178,83 @@ def test_ldl_primitive_vmap():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("dtype", all_dtypes)
+@pytest.mark.parametrize("lower", [True, False])
 @pytest.mark.parametrize("n", [4, 6])
-def test_ldl_solve_correctness(n, dtype):
-  """ldl_solve(factors, ipiv, b) ≈ A^{-1} @ b."""
+def test_ldl_solve_correctness(n, dtype, lower):
+  """ldl_solve(factors, ipiv, b) ≈ A^{-1} @ b — JIT-compatible via sytrs."""
   a = jnp.array(_rand_sym(n, dtype))
   b = jnp.array(RNG.standard_normal((n, 2)).astype(dtype))
+  hermitian = np.issubdtype(dtype, np.complexfloating)
 
-  factors, ipiv = ldl_primitive(a, lower=True, hermitian=False)
-  x = ldl_solve(factors, ipiv, b, lower=True, hermitian=False)
+  factors, ipiv = ldl_primitive(a, lower=lower, hermitian=hermitian)
+  x = ldl_solve(factors, ipiv, b, lower=lower, hermitian=hermitian)
 
-  # Reference: compute A @ x and check it equals b.
   tol = _tol(dtype)
   np.testing.assert_allclose(a @ x, b, rtol=tol, atol=tol)
 
 
-@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("dtype", all_dtypes)
 @pytest.mark.parametrize("n", [4, 6])
-def test_ldl_solve_hermitian(n, dtype):
-  """ldl_solve with hermitian=True."""
+def test_ldl_solve_1d_rhs(n, dtype):
+  """ldl_solve with 1-D b returns 1-D x."""
   a = jnp.array(_rand_sym(n, dtype))
-  b = jnp.array(
-    (RNG.standard_normal((n,)) + 1j * RNG.standard_normal((n,))).astype(dtype)
+  b = jnp.array(RNG.standard_normal((n,)).astype(dtype))
+  hermitian = np.issubdtype(dtype, np.complexfloating)
+
+  factors, ipiv = ldl_primitive(a, lower=True, hermitian=hermitian)
+  x = ldl_solve(factors, ipiv, b, lower=True, hermitian=hermitian)
+
+  assert x.shape == (n,)
+  tol = _tol(dtype)
+  np.testing.assert_allclose(a @ x, b, rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("dtype", all_dtypes)
+def test_ldl_solve_jit(dtype):
+  """ldl_solve is JIT-compatible (uses sytrs FFI on CPU)."""
+  n = 5
+  a = jnp.array(_rand_sym(n, dtype))
+  b = jnp.array(RNG.standard_normal((n,)).astype(dtype))
+  hermitian = np.issubdtype(dtype, np.complexfloating)
+
+  factors, ipiv = ldl_primitive(a, lower=True, hermitian=hermitian)
+
+  @jax.jit
+  def fn(factors, ipiv, b):
+    return ldl_solve(factors, ipiv, b, lower=True, hermitian=hermitian)
+
+  x_jit = fn(factors, ipiv, b)
+  x_ref = ldl_solve(factors, ipiv, b, lower=True, hermitian=hermitian)
+
+  tol = _tol(dtype)
+  np.testing.assert_allclose(x_jit, x_ref, rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("dtype", all_dtypes)
+def test_ldl_solve_vmap(dtype):
+  """ldl_solve is vmap-compatible."""
+  batch, n = 3, 5
+  a_batch = jnp.array(_rand_sym(n, dtype, batch=(batch,)))
+  b_batch = jnp.array(RNG.standard_normal((batch, n)).astype(dtype))
+  hermitian = np.issubdtype(dtype, np.complexfloating)
+
+  factors_batch, ipiv_batch = ldl_primitive(
+    a_batch, lower=True, hermitian=hermitian
   )
 
-  factors, ipiv = ldl_primitive(a, lower=True, hermitian=True)
-  x = ldl_solve(factors, ipiv, b, lower=True, hermitian=True)
+  @jax.vmap
+  def fn(factors, ipiv, b):
+    return ldl_solve(factors, ipiv, b, lower=True, hermitian=hermitian)
+
+  x_vmap = fn(factors_batch, ipiv_batch, b_batch)
+  assert x_vmap.shape == (batch, n)
 
   tol = _tol(dtype)
-  np.testing.assert_allclose(a @ x, b, rtol=tol, atol=tol)
+  for i in range(batch):
+    np.testing.assert_allclose(
+      a_batch[i] @ x_vmap[i], b_batch[i], rtol=tol, atol=tol
+    )
 
 
 # ---------------------------------------------------------------------------

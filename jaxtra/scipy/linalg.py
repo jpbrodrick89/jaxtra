@@ -20,10 +20,11 @@ from jax._src.lax.linalg import geqrf, geqp3
 from jaxtra._src.lax.linalg import (
   ormqr,
   ldl as _ldl_primitive,
+  ldl_solve,
   _reconstruct_ldl_numpy,
 )
 
-__all__ = ["qr_multiply", "ldl"]
+__all__ = ["qr_multiply", "ldl", "ldl_solve"]
 
 
 @overload

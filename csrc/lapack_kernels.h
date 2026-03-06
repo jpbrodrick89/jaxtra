@@ -97,4 +97,41 @@ extern template struct LdlDecomposition<ffi::DataType::F64>;
 extern template struct LdlDecomposition<ffi::DataType::C64>;
 extern template struct LdlDecomposition<ffi::DataType::C128>;
 
+// ---------------------------------------------------------------------------
+// LdlSolve<dtype>
+// ---------------------------------------------------------------------------
+// Solves A*X = B using the factorization computed by LdlDecomposition via
+// LAPACK ssytrs/dsytrs (real symmetric), csytrs/zsytrs (complex symmetric),
+// or chetrs/zhetrs (complex Hermitian).
+//
+// `fn`    — sytrs pointer. Set at import time by _jaxtra.initialize().
+// `fn_he` — hetrs pointer (complex Hermitian only; nullptr for real types).
+//
+// Unlike sytrf, sytrs has no workspace parameter.
+template <ffi::DataType dtype>
+struct LdlSolve {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for sytrs / hetrs (no workspace).
+  using FnType = void(char* /*uplo*/, int* /*n*/, int* /*nrhs*/,
+                      ValueType* /*a*/, int* /*lda*/, int* /*ipiv*/,
+                      ValueType* /*b*/, int* /*ldb*/, int* /*info*/);
+
+  // fn: sytrs variant; fn_he: hetrs variant (nullptr for real types).
+  inline static FnType* fn = nullptr;
+  inline static FnType* fn_he = nullptr;
+
+  // Kernel: reads factors and ipiv, solves b in-place → x_out.
+  static ffi::Error Kernel(ffi::Buffer<dtype> factors,
+                            ffi::Buffer<ffi::DataType::S32> ipiv,
+                            ffi::Buffer<dtype> b, bool lower, bool hermitian,
+                            ffi::ResultBuffer<dtype> x_out);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct LdlSolve<ffi::DataType::F32>;
+extern template struct LdlSolve<ffi::DataType::F64>;
+extern template struct LdlSolve<ffi::DataType::C64>;
+extern template struct LdlSolve<ffi::DataType::C128>;
+
 }  // namespace jaxtra
