@@ -1,46 +1,45 @@
 # LDL Benchmarks
 
-Comparison of jaxtra's LDL (Bunch-Kaufman) factorisation against LU and Cholesky
-on square matrices (float64 and complex128, CPU):
+Comparison of jaxtra's LDL (Bunch-Kaufman) factorisation against LU for a
+full solve (factorization + triangular solve) of a single 1-D right-hand side,
+on square matrices (float64 and complex128, CPU, n = 50 – 5000):
 
-| Method        | Implementation                                                   |
-| ------------- | ---------------------------------------------------------------- |
-| **LDL**       | `jaxtra.scipy.linalg.ldl` — LAPACK `dsytrf` / `zhetrf`          |
-| **LU**        | `jax._src.lax.linalg.lu` — LAPACK `dgetrf`, always applicable   |
-| **Cholesky**  | `jax._src.lax.linalg.cholesky` — PSD matrices only (f64 series) |
+| Method            | Implementation                                                        |
+| ----------------- | --------------------------------------------------------------------- |
+| **LDL full solve**| `jaxtra._src.lax.linalg.ldl` (JIT) + `ldl_solve` (NumPy)            |
+| **LU full solve** | `jax.scipy.linalg.solve` — fully JIT-compiled LAPACK `dgetrf`/`dtrsv`|
 
-All timings use `jax.jit` + `jax.block_until_ready` with one warmup run
-followed by five timed repetitions; the reported value is the median.
+All timings use `jax.block_until_ready` with one warmup run followed by five
+timed repetitions; the reported value is the median.
 Raw results are in `benchmarks/results/bench_ldl.csv`.
+
+**Note on D storage**: D is returned as a full `(n, n)` block-diagonal matrix,
+not a 1-D array. Bunch-Kaufman pivoting can produce 2×2 off-diagonal blocks in
+D, so a 1-D diagonal representation is insufficient. This matches scipy's
+behavior.
 
 ## Results
 
 ```{figure} ../benchmarks/results/bench_ldl.png
-:alt: LDL vs LU vs Cholesky benchmark
+:alt: LDL vs LU full solve benchmark
 :width: 95%
 :align: center
 ```
 
 ## Summary
 
-**LDL vs LU (real symmetric f64)**
-: LDL is faster than LU at small sizes (n ≤ 200) and for large matrices
-(n ≥ 2 000) where the Bunch-Kaufman pivot strategy requires fewer operations
-than full partial pivoting. At intermediate sizes (n ≈ 500 – 1 000) LU is
-faster due to LAPACK's highly optimised panel factorisation outperforming
-sytrf's blocked algorithm.
+**LDL factorization vs LU factorization**
+: LDL factorization alone is competitive with LU and faster for large symmetric
+problems (1.2 – 1.6× speedup for complex Hermitian at n ≥ 500).
 
-**LDL vs LU (complex Hermitian c128)**
-: LDL (hetrf) is consistently **1.2 – 1.6×** faster than LU across all sizes,
-with the advantage growing for large matrices. Complex Hermitian structure
-allows sytrf to halve the memory traffic vs. getrf.
+**LDL full solve vs LU full solve**
+: `ldl_solve` is currently implemented in NumPy (not JIT-traceable), while
+`jax.scipy.linalg.solve` is fully JIT-compiled. As a result the end-to-end
+solve is significantly slower through the jaxtra path at all matrix sizes.
+The unit-diagonal triangular factors do not compensate for the NumPy overhead.
 
-**Cholesky (PSD baseline)**
-: Cholesky is the fastest option when the matrix is known to be positive
-definite — it avoids pivoting entirely. LDL is the correct choice for
-indefinite symmetric/Hermitian matrices where Cholesky would fail.
-
-**Qualitative take-away**: use `jaxtra.scipy.linalg.ldl` for symmetric or
-Hermitian indefinite systems. It is fully `jit` / `vmap` / `grad` compatible
-and consistently outperforms generic LU factorisation for large Hermitian
-problems.
+**Qualitative take-away**: `jaxtra.scipy.linalg.ldl` is the right choice when
+you need the factorization itself (e.g. to extract the D matrix or permutation
+for downstream use), or when batching many small systems via `vmap`. For a
+single solve `jax.scipy.linalg.solve` remains faster until `ldl_solve` gains
+a JIT-compatible implementation.
