@@ -4,10 +4,10 @@ Comparison of jaxtra's LDL (Bunch-Kaufman) factorisation against LU for a
 full solve (factorization + triangular solve) of a single 1-D right-hand side,
 on square matrices (float64 and complex128, CPU, n = 50 – 5000):
 
-| Method            | Implementation                                                        |
-| ----------------- | --------------------------------------------------------------------- |
-| **LDL full solve**| `jaxtra._src.lax.linalg.ldl` (JIT) + `ldl_solve` (NumPy)            |
-| **LU full solve** | `jax.scipy.linalg.solve` — fully JIT-compiled LAPACK `dgetrf`/`dtrsv`|
+| Method            | Implementation                                                               |
+| ----------------- | ---------------------------------------------------------------------------- |
+| **LDL full solve**| `jaxtra._src.lax.linalg.ldl` (JIT) + `ldl_solve` via LAPACK `sytrs` (JIT)  |
+| **LU full solve** | `jax.scipy.linalg.solve` — fully JIT-compiled LAPACK `dgetrf`/`dtrsv`       |
 
 All timings use `jax.block_until_ready` with one warmup run followed by five
 timed repetitions; the reported value is the median.
@@ -33,13 +33,14 @@ behavior.
 problems (1.2 – 1.6× speedup for complex Hermitian at n ≥ 500).
 
 **LDL full solve vs LU full solve**
-: `ldl_solve` is currently implemented in NumPy (not JIT-traceable), while
-`jax.scipy.linalg.solve` is fully JIT-compiled. As a result the end-to-end
-solve is significantly slower through the jaxtra path at all matrix sizes.
-The unit-diagonal triangular factors do not compensate for the NumPy overhead.
+: Both `ldl_solve` (via LAPACK `sytrs`/`hetrs`) and `jax.scipy.linalg.solve`
+are fully JIT-compiled, making timings directly comparable. LDL is faster than
+LU for large symmetric indefinite problems (n ≥ 2000 for f64; n ≥ 500 for
+c128), with speedups of 1.1 – 1.4× at n = 5000. For small n, LU's lower
+factorization overhead wins, but LDL is within 2× across all sizes.
 
-**Qualitative take-away**: `jaxtra.scipy.linalg.ldl` is the right choice when
-you need the factorization itself (e.g. to extract the D matrix or permutation
-for downstream use), or when batching many small systems via `vmap`. For a
-single solve `jax.scipy.linalg.solve` remains faster until `ldl_solve` gains
-a JIT-compatible implementation.
+**Qualitative take-away**: `jaxtra.scipy.linalg.ldl` + `ldl_solve` is the
+right choice for large symmetric/Hermitian indefinite systems, or when you need
+the factorization itself (e.g. to extract D or the permutation for downstream
+use), or when batching via `vmap`. For small matrices or when symmetry cannot
+be exploited, `jax.scipy.linalg.solve` remains a fine default.

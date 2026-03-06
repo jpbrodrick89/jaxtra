@@ -6,10 +6,9 @@ of a single 1-D right-hand side vector, comparing:
   - LDL (sytrf) via jaxtra  — for symmetric/Hermitian indefinite matrices
   - LU  (getrf) via jax.scipy.linalg.solve  — always applicable
 
-LDL factorization is JIT-compiled.  The LDL triangular solve is performed in
-NumPy (ldl_solve is not yet JIT-traceable), while jax.scipy.linalg.solve is
-fully JIT-compiled, so timings are not perfectly apples-to-apples; the total
-wall time still reflects end-to-end solve cost for a caller.
+Both LDL factorization and the LDL triangular solve (via LAPACK sytrs/hetrs)
+are JIT-compiled JAX primitives.  jax.scipy.linalg.solve is also fully
+JIT-compiled, so timings are apples-to-apples end-to-end solve cost.
 
 Matrix sizes: 50 to 5000.  Two series:
   1. Real symmetric indefinite (f64)
