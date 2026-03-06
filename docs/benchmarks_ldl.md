@@ -34,10 +34,11 @@ problems (1.2 – 1.6× speedup for complex Hermitian at n ≥ 500).
 
 **LDL full solve vs LU full solve**
 : Both `ldl_solve` (via LAPACK `sytrs`/`hetrs`) and `jax.scipy.linalg.solve`
-are fully JIT-compiled, making timings directly comparable. LDL is faster than
-LU for large symmetric indefinite problems (n ≥ 2000 for f64; n ≥ 500 for
-c128), with speedups of 1.1 – 1.4× at n = 5000. For small n, LU's lower
-factorization overhead wins, but LDL is within 2× across all sizes.
+are fully JIT-compiled, and the factorization+solve are fused into a single XLA
+computation for each. The `sytrs` triangular solve for a 1-D rhs is negligible
+compared to the factorization, so the full-solve time closely tracks the
+factorization time. LDL is faster than LU across all tested sizes for complex
+Hermitian matrices (1.2 – 1.6×) and at n ≥ 2000 for real symmetric (1.4 – 1.7×).
 
 **Qualitative take-away**: `jaxtra.scipy.linalg.ldl` + `ldl_solve` is the
 right choice for large symmetric/Hermitian indefinite systems, or when you need

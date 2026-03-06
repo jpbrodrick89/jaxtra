@@ -55,13 +55,13 @@ RNG = np.random.default_rng(42)
 
 @jax.jit
 def _ldl_sym(a):
-  """LDL factorisation — real symmetric."""
+  """LDL factorisation only — real symmetric."""
   return ldl_primitive(a, lower=True, hermitian=False)
 
 
 @jax.jit
 def _ldl_herm(a):
-  """LDL factorisation — complex Hermitian."""
+  """LDL factorisation only — complex Hermitian."""
   return ldl_primitive(a, lower=True, hermitian=True)
 
 
@@ -84,19 +84,23 @@ def _lu_solve_cplx(a, b):
 
 
 # ---------------------------------------------------------------------------
-# LDL full solve wrappers (JIT factorization + NumPy triangular solve)
+# LDL full solve wrappers — JIT over the JOINT factorization+solve graph
+# so both ops are fused into a single XLA computation with no Python
+# roundtrip between them.
 # ---------------------------------------------------------------------------
 
 
+@jax.jit
 def _ldl_full_sym(a, b):
-  """LDL full solve — real symmetric (factorization + solve)."""
-  factors, ipiv = _ldl_sym(a)
+  """LDL full solve — real symmetric (factorization + solve, single JIT)."""
+  factors, ipiv = ldl_primitive(a, lower=True, hermitian=False)
   return ldl_solve(factors, ipiv, b, lower=True, hermitian=False)
 
 
+@jax.jit
 def _ldl_full_herm(a, b):
-  """LDL full solve — complex Hermitian (factorization + solve)."""
-  factors, ipiv = _ldl_herm(a)
+  """LDL full solve — complex Hermitian (factorization + solve, single JIT)."""
+  factors, ipiv = ldl_primitive(a, lower=True, hermitian=True)
   return ldl_solve(factors, ipiv, b, lower=True, hermitian=True)
 
 
