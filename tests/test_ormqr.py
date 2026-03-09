@@ -53,6 +53,9 @@ def test_ormqr(a_shape, c_shape, dtype, left, transpose):
     result = ormqr(qr_result, taus, c, left=left, transpose=transpose)
 
     # Reference: build full Q from householder_product, then matmul.
+    # Use "highest" precision to disable tensor cores (which use FP16 internally
+    # by default on A100+ and cause ~1e-3 error for complex64).  ormqr itself
+    # uses cuSolver Householder reflectors and is unaffected by this flag.
     m, n = a_shape[-2:]
     if m > n:
         padded = jnp.pad(qr_result,
@@ -63,10 +66,11 @@ def test_ormqr(a_shape, c_shape, dtype, left, transpose):
     else:
         q = householder_product(qr_result, taus)
     q_op = jnp.conj(jnp.swapaxes(q, -1, -2)) if transpose else q
-    expected = q_op @ c if left else c @ q_op
+    with jax.default_matmul_precision("highest"):
+        expected = q_op @ c if left else c @ q_op
 
-    tol = {np.float32: 1e-4, np.complex64: 1e-4,
-           np.float64: 1e-10, np.complex128: 1e-10}[dtype]
+    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+           np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
 
 
@@ -90,17 +94,19 @@ def test_qr_multiply(shape, dtype, mode, pivoting):
     else:
         result, r = qr_multiply(a, c, mode=mode, pivoting=False)
 
-    # Reference via jax.scipy.linalg.qr
+    # Reference via jax.scipy.linalg.qr — use "highest" precision to disable
+    # tensor cores (which use FP16 internally on A100+ and cause ~1e-3 error
+    # for complex64 by default).
     if pivoting:
         q_full, r_full, _ = jax.scipy.linalg.qr(a, pivoting=True)
     else:
         q_full, r_full = jax.scipy.linalg.qr(a)
     r_ref = r_full[..., :k, :]
+    with jax.default_matmul_precision("highest"):
+        expected = q_full[..., :k] @ c if mode == "left" else c @ q_full[..., :k]
 
-    expected = q_full[..., :k] @ c if mode == "left" else c @ q_full[..., :k]
-
-    tol = {np.float32: 1e-4, np.complex64: 1e-4,
-           np.float64: 1e-10, np.complex128: 1e-10}[dtype]
+    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+           np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
     np.testing.assert_allclose(r, r_ref, rtol=tol, atol=tol)
 
@@ -121,14 +127,16 @@ def test_qr_multiply_1d(shape, dtype, mode):
     result, r = qr_multiply(a, c, mode=mode)
     assert result.ndim == 1
 
+    # Use "highest" precision to disable tensor cores (see test_qr_multiply).
     q_full, _ = jax.scipy.linalg.qr(a)
-    if mode == "left":
-        expected = (q_full[..., :k] @ c[:, None]).ravel()
-    else:
-        expected = (c[None, :] @ q_full[..., :k]).ravel()
+    with jax.default_matmul_precision("highest"):
+        if mode == "left":
+            expected = (q_full[..., :k] @ c[:, None]).ravel()
+        else:
+            expected = (c[None, :] @ q_full[..., :k]).ravel()
 
-    tol = {np.float32: 1e-4, np.complex64: 1e-4,
-           np.float64: 1e-10, np.complex128: 1e-10}[dtype]
+    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+           np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
 
 
