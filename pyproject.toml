@@ -36,10 +36,8 @@ dependencies = [
 # Runtime CUDA libraries as Python packages (from NVIDIA's pip channel).
 # These are the shared libraries that _jaxtra_cuda.so links against at runtime.
 # The build itself still requires the CUDA development toolkit on the build machine.
-gpu = [
-  "nvidia-cusolver-cu12>=11.0; platform_system=='Linux' and platform_machine=='x86_64'",
-  "nvidia-cuda-runtime-cu12>=12.0; platform_system=='Linux' and platform_machine=='x86_64'",
-]
+cuda12 = ["jax[cuda12]"]
+cuda13 = ["jax[cuda13]"]
 test = ["pytest"]
 benchmark = ["matplotlib", "pandas"]
 docs = [
