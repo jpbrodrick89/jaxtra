@@ -13,7 +13,6 @@
 #include "xla/ffi/api/ffi.h"
 
 namespace nb = nanobind;
-namespace ffi = xla::ffi;
 using namespace jaxtra;
 
 // ---------------------------------------------------------------------------
