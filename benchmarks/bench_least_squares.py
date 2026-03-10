@@ -74,6 +74,8 @@ def _scipy_gels_solve(A_np, b_np):
     return b1[:A_np.shape[1], 0]
 
 
+
+
 # ---------------------------------------------------------------------------
 # Timing helpers
 # ---------------------------------------------------------------------------
@@ -174,11 +176,8 @@ for n_cols in COL_COUNTS:
             t_gels = time_numpy_fn(_scipy_gels_solve, A_np, b_np,
                                      n_warmup=N_WARMUP, n_repeat=N_REPEAT)
             records.append({"n_rows": n_rows, "n_cols": n_cols,
-                             "method": "scipy gels", "time_ms": t_gels * 1e3})
+                             "method": "scipy dgels", "time_ms": t_gels * 1e3})
             row += f"  {t_gels*1e3:17.2f}"
-            gels_ratio = f"{t_gels/t_jaxtra:8.2f}x"
-        else:
-            gels_ratio = ""
 
         row += (f"  {t_dense/t_jaxtra:6.2f}x"
                 f"  {t_lstsq/t_jaxtra:8.2f}x")
