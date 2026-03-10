@@ -295,7 +295,7 @@ make_entry(JAX_GPU_PREFIX "solver_mynew_ffi",
 
 ### Building the GPU extension
 
-See *Rebuilding the C extension → CPU + GPU* at the top for the build commands.
+See _Rebuilding the C extension → CPU + GPU_ at the top for the build commands.
 
 CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. Abseil is fetched automatically via `FetchContent` if not installed system-wide. Override with `JAXTRA_CUDA=ON` to make CUDA required (fail if absent).
 
@@ -443,7 +443,7 @@ pytest tests/ -v
 | Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `jaxlib/cpu/lapack_kernels.cc`           |
 | Add macro, `initialize()` assignments, `registrations()` entries           | `jaxlib/cpu/jaxtra_module.cc`            |
 | Add new `.cc` source if needed                                             | `CMakeLists.txt`                         |
-| Rebuild (see *Rebuilding the C extension* at top)                                                          | —                                        |
+| Rebuild (see _Rebuilding the C extension_ at top)                          | —                                        |
 | Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_src/lax/linalg.py`              |
 | High-level wrapper                                                         | `jaxtra/scipy/linalg.py` (if applicable) |
 | Parametrized correctness + JIT + vmap tests                                | `tests/`                                 |
@@ -458,5 +458,5 @@ pytest tests/ -v
 | Declare FFI handler symbol                                                         | `jaxlib/gpu/solver_kernels_ffi.h`   |
 | Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `jaxlib/gpu/solver_kernels_ffi.cc`  |
 | Register GPU target in `registrations()`                                           | `jaxlib/cuda/jaxtra_cuda_module.cc` |
-| Rebuild with `--extra cuda13` (see *Rebuilding the C extension* at top)                                            | —                                   |
+| Rebuild with `--extra cuda13` (see _Rebuilding the C extension_ at top)            | —                                   |
 | GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`         |
