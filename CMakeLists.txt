@@ -56,13 +56,13 @@ message(STATUS "XLA FFI include dir: ${XLA_INCLUDE_DIR}")
 # by initialize() using nb::capsule::data() on scipy.linalg.cython_lapack,
 # mirroring jaxlib's GetLapackKernelsFromScipy() exactly.
 nanobind_add_module(_jaxtra MODULE
-  csrc/jaxtra_module.cc
-  csrc/lapack_kernels.cc
+  jaxlib/cpu/jaxtra_module.cc
+  jaxlib/cpu/lapack_kernels.cc
 )
 
 target_include_directories(_jaxtra PRIVATE
   ${XLA_INCLUDE_DIR}
-  ${CMAKE_CURRENT_SOURCE_DIR}/csrc
+  ${CMAKE_CURRENT_SOURCE_DIR}/jaxlib/cpu
 )
 
 # Suppress sign-conversion warnings from the XLA FFI headers.
@@ -78,13 +78,13 @@ install(TARGETS _jaxtra LIBRARY DESTINATION jaxtra)
 # GPU extension: _jaxtra_cuda  (auto-built when CUDA is detected)
 # ---------------------------------------------------------------------------
 # Non-Bazel equivalents of the jaxlib GPU build rules from PR #35104:
-#   jaxlib/gpu/solver_kernels_ffi.cc  → csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc
-#   jaxlib/gpu/solver_interface.cc    → csrc/gpu/jaxlib/gpu/solver_interface.cc
-#   jaxlib/gpu/gpu_kernel_helpers.cc  → csrc/gpu/jaxlib/gpu/gpu_kernel_helpers.cc
-#   jaxlib/gpu/solver_handle_pool.cc  → csrc/gpu/jaxlib/gpu/solver_handle_pool.cc
-#   jaxlib/gpu/solver.cc + gpu_kernels.cc → csrc/jaxtra_cuda_module.cc
+#   jaxlib/gpu/solver_kernels_ffi.cc  → jaxlib/gpu/solver_kernels_ffi.cc
+#   jaxlib/gpu/solver_interface.cc    → jaxlib/gpu/solver_interface.cc
+#   jaxlib/gpu/gpu_kernel_helpers.cc  → jaxlib/gpu/gpu_kernel_helpers.cc
+#   jaxlib/gpu/solver_handle_pool.cc  → jaxlib/gpu/solver_handle_pool.cc
+#   jaxlib/gpu/solver.cc + gpu_kernels.cc → jaxlib/cuda/jaxtra_cuda_module.cc
 #
-# Bundled jaxlib headers (csrc/gpu/) replace Bazel's @jax//jaxlib deps.
+# Bundled jaxlib headers (jaxlib/gpu/, jaxlib/ffi_helpers.h) replace Bazel's @jax//jaxlib deps.
 # Abseil is fetched via FetchContent (Bazel uses @com_google_absl).
 # CUDA headers are found via CMake CUDAToolkit (Bazel uses third_party/gpus).
 if(JAXTRA_CUDA STREQUAL "auto")
@@ -107,6 +107,18 @@ endif()
 if(_jaxtra_cuda_build)
   # CUDAToolkit already found in the detection block above.
 
+  # Abseil 20260107.1 requires C++20; bump the standard here so CUDA toolkit
+  # detection (above) ran with C++17, which FindCUDAToolkit/FindThreads needs.
+  # Also set CMAKE_CXX_FLAGS directly so abseil's check_cxx_source_compiles
+  # (which runs in a subdirectory scope) reliably sees the C++20 standard.
+  set(CMAKE_CXX_STANDARD 20)
+  string(APPEND CMAKE_CXX_FLAGS " -std=gnu++20")
+  # Pre-seed abseil's C++ standard check results so AbseilDll.cmake does not
+  # re-run check_cxx_source_compiles (which fails to see C++20 flags in the
+  # FetchContent subdirectory scope on this system despite GCC 14 supporting it).
+  set(ABSL_INTERNAL_AT_LEAST_CXX17 1 CACHE INTERNAL "" FORCE)
+  set(ABSL_INTERNAL_AT_LEAST_CXX20 1 CACHE INTERNAL "" FORCE)
+
   # --- Abseil (Bazel uses @com_google_absl; here we use FetchContent) ---
   find_package(absl QUIET)
   if(NOT absl_FOUND)
@@ -114,7 +126,7 @@ if(_jaxtra_cuda_build)
     FetchContent_Declare(
       abseil-cpp
       GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
-      GIT_TAG        20240722.0
+      GIT_TAG        20260107.1
       GIT_SHALLOW    TRUE
     )
     set(ABSL_PROPAGATE_CXX_STD ON)
@@ -124,21 +136,41 @@ if(_jaxtra_cuda_build)
 
   # --- _jaxtra_cuda module ---
   nanobind_add_module(_jaxtra_cuda MODULE
-    csrc/jaxtra_cuda_module.cc
-    csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc
-    csrc/gpu/jaxlib/gpu/solver_interface.cc
-    csrc/gpu/jaxlib/gpu/gpu_kernel_helpers.cc
-    csrc/gpu/jaxlib/gpu/solver_handle_pool.cc
-    csrc/gpu/jaxlib/gpu/sparse_kernels_ffi.cc
-    csrc/gpu/jaxlib/gpu/sparse_handle_pool.cc
+    jaxlib/cuda/jaxtra_cuda_module.cc
+    jaxlib/gpu/solver_kernels_ffi.cc
+    jaxlib/gpu/solver_interface.cc
+    jaxlib/gpu/gpu_kernel_helpers.cc
+    jaxlib/gpu/solver_handle_pool.cc
+    jaxlib/gpu/sparse_kernels_ffi.cc
+    jaxlib/gpu/sparse_handle_pool.cc
   )
 
   target_compile_definitions(_jaxtra_cuda PRIVATE JAX_GPU_CUDA)
 
+  # Find cuDNN and CUPTI headers via nvidia-* packages bundled with jax[cuda13].
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c
+      "import nvidia.cudnn, os; print(os.path.join(nvidia.cudnn.__path__[0], 'include'))"
+    OUTPUT_VARIABLE CUDNN_INCLUDE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _cudnn_result
+  )
+  if(NOT _cudnn_result EQUAL 0 OR NOT EXISTS "${CUDNN_INCLUDE_DIR}/cudnn.h")
+    message(FATAL_ERROR
+      "cuDNN header not found, make sure you have cuda-compatible version of jax installed (e.g. jax[cuda13])")
+  endif()
+  message(STATUS "cuDNN include dir: ${CUDNN_INCLUDE_DIR}")
+
+  # CUDAToolkit_CUPTI_INCLUDE_DIR may contain relative path components; resolve it.
+  get_filename_component(CUPTI_INCLUDE_DIR "${CUDAToolkit_CUPTI_INCLUDE_DIR}" ABSOLUTE)
+  message(STATUS "CUPTI include dir: ${CUPTI_INCLUDE_DIR}")
+
   target_include_directories(_jaxtra_cuda PRIVATE
     ${XLA_INCLUDE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/gpu   # resolves "jaxlib/gpu/..." bundled headers
+    ${CMAKE_CURRENT_SOURCE_DIR}            # resolves "jaxlib/gpu/..." bundled headers
     ${CUDAToolkit_INCLUDE_DIRS}
+    ${CUDNN_INCLUDE_DIR}
+    ${CUPTI_INCLUDE_DIR}
   )
 
   target_compile_options(_jaxtra_cuda PRIVATE
@@ -147,6 +179,7 @@ if(_jaxtra_cuda_build)
   )
 
   target_link_libraries(_jaxtra_cuda PRIVATE
+    CUDA::cudart
     CUDA::cusolver
     CUDA::cusparse
     absl::status

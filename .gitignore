@@ -6,6 +6,7 @@ dist/
 build/
 
 # scikit-build-core / CMake in-tree build artefacts
+_deps/
 CMakeCache.txt
 CMakeFiles/
 CMakeInit.txt

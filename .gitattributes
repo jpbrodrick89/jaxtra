@@ -1,3 +1,4 @@
-# csrc/gpu/jaxlib/ contains files bundled verbatim from the jaxlib source tree.
+# jaxlib/gpu/ and jaxlib/ffi_helpers.h contain files bundled verbatim from the jaxlib source tree.
 # Mark as vendored so GitHub Linguist excludes them from language statistics.
-csrc/gpu/jaxlib/** linguist-vendored=true
+jaxlib/gpu/** linguist-vendored=true
+jaxlib/ffi_helpers.h linguist-vendored=true

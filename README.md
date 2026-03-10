@@ -51,24 +51,24 @@ x = jsl.solve_triangular(R, Qtb)
 
 ## GPU support
 
-Install with the `[gpu]` extra to pull in the NVIDIA runtime libraries and build the cuSolver extension:
+Install with the `[cuda13]` extra to pull in the NVIDIA runtime libraries and build the cuSolver extension:
 
 ```bash
-pip install jaxtra[gpu]          # pulls nvidia-cusolver-cu12 + builds _jaxtra_cuda.so if CUDA toolkit is present
+pip install jaxtra[cuda13]          # pulls jax[cuda13] + builds _jaxtra_cuda.so if CUDA toolkit is present
 # or with uv:
-uv add jaxtra[gpu]
+uv add jaxtra[cuda13]
 ```
 
 The build auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is compiled when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. If you need to override:
 
 ```bash
-JAXTRA_CUDA=OFF  pip install jaxtra[gpu]   # force CPU-only even if CUDA is present
-JAXTRA_CUDA=ON   pip install jaxtra[gpu]   # require CUDA; fail if not found
+JAXTRA_CUDA=OFF  pip install jaxtra[cuda13]   # force CPU-only even if CUDA is present
+JAXTRA_CUDA=ON   pip install jaxtra[cuda13]   # require CUDA; fail if not found
 ```
 
 Once `_jaxtra_cuda.so` is present alongside `_jaxtra.so`, `jaxtra` detects and loads it automatically at import time — no code change required.
 
-Requirements: CUDA ≥ 11.x, cuSolver, Abseil (fetched automatically via CMake `FetchContent` if not installed system-wide).
+Requirements: CUDA ≥ 12.0, cuSolver, Abseil (fetched automatically via CMake `FetchContent` if not installed system-wide).
 
 ---
 

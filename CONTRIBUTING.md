@@ -18,22 +18,22 @@ when adding a new routine from scratch.
 ## Repository layout
 
 ```
-csrc/
-  lapack_kernels.h          CPU kernel struct declarations (one per routine)
-  lapack_kernels.cc         CPU kernel implementations
-  lapack_utils.h            XLA FFI utilities (SplitBatch2D, CopyIfDiffBuffer, …)
-  jaxtra_module.cc          CPU nanobind module: initialize() + registrations()
-  jaxtra_cuda_module.cc     GPU nanobind module: registrations() for CUDA targets
-  gpu/
-    jaxlib/
-      ffi_helpers.h         bundled from jaxlib: AllocateWorkspace, FFI_ASSIGN_OR_RETURN, …
-      gpu/
-        handle_pool.h       RAII cuSolver/cuBLAS handle pool template
-        vendor.h            gpuSolver* → cuSolver*/hipSolver* macro map
-        gpu_kernel_helpers.h/cc   JAX_AS_STATUS, AsStatus overloads
-        solver_handle_pool.h/cc   SolverHandlePool::Borrow
-        solver_interface.h/cc     OrmqrBufferSize<T>, Ormqr<T> cuSolver wrappers
-        solver_kernels_ffi.h/cc   OrmqrFfi XLA FFI handler
+jaxlib/                     mirrors the jaxlib/ layout in the JAX repo
+  cpu/
+    lapack_kernels.h        CPU kernel struct declarations (one per routine)
+    lapack_kernels.cc       CPU kernel implementations
+    lapack_utils.h          XLA FFI utilities (SplitBatch2D, CopyIfDiffBuffer, …)
+    jaxtra_module.cc        CPU nanobind module: initialize() + registrations()
+  cuda/
+    jaxtra_cuda_module.cc   GPU nanobind module: registrations() for CUDA targets
+  ffi_helpers.h             bundled from jaxlib: AllocateWorkspace, FFI_ASSIGN_OR_RETURN, …
+  gpu/                      bundled verbatim from jaxlib (linguist-vendored)
+    handle_pool.h           RAII cuSolver/cuBLAS handle pool template
+    vendor.h                gpuSolver* → cuSolver*/hipSolver* macro map
+    gpu_kernel_helpers.h/cc JAX_AS_STATUS, AsStatus overloads
+    solver_handle_pool.h/cc SolverHandlePool::Borrow
+    solver_interface.h/cc   OrmqrBufferSize<T>, Ormqr<T> cuSolver wrappers
+    solver_kernels_ffi.h/cc OrmqrFfi XLA FFI handler
 CMakeLists.txt              build system (auto-detects CUDA; JAXTRA_CUDA env var overrides)
 jaxtra/
   _src/
@@ -152,8 +152,8 @@ make_entry("lapack_zmynew_ffi", reinterpret_cast<void*>(lapack_zmynew_ffi));
 
 ```cmake
 nanobind_add_module(_jaxtra MODULE
-  csrc/jaxtra_module.cc
-  csrc/lapack_kernels.cc
+  jaxlib/cpu/jaxtra_module.cc
+  jaxlib/cpu/lapack_kernels.cc
 )
 ```
 
@@ -161,9 +161,9 @@ Only edit it if you create a new `.cc` source file.
 
 ---
 
-## 1d. GPU kernel (`csrc/gpu/`)
+## 1d. GPU kernel (`jaxlib/gpu/`)
 
-If your LAPACK routine has a cuSolver equivalent (e.g. `ormqr` → `cusolverDn?ormqr`), you can add a GPU path. The GPU files in `csrc/gpu/jaxlib/gpu/` mirror `jaxlib/gpu/` from PR #35104 verbatim.
+If your LAPACK routine has a cuSolver equivalent (e.g. `ormqr` → `cusolverDn?ormqr`), you can add a GPU path. The GPU files in `jaxlib/gpu/` mirror `jaxlib/gpu/` from PR #35104 verbatim.
 
 ### `solver_interface.h` — declare the cuSolver wrapper
 
@@ -242,10 +242,14 @@ make_entry(JAX_GPU_PREFIX "solver_mynew_ffi",
 ### Building the GPU extension
 
 ```bash
-pip install -e ".[gpu]" --no-build-isolation
+# uv (recommended):
+uv sync --frozen --extra cuda13 --no-build-isolation-package jaxtra --reinstall-package jaxtra
+
+# pip:
+pip install -e ".[cuda13]" --no-build-isolation
 ```
 
-CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. Abseil is fetched automatically via `FetchContent` if not installed system-wide. Override with `JAXTRA_CUDA=ON pip install ...` to make CUDA required (fail if absent).
+CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. Abseil is fetched automatically via `FetchContent` if not installed system-wide. Override with `JAXTRA_CUDA=ON` to make CUDA required (fail if absent).
 
 ---
 
@@ -257,34 +261,45 @@ command depends on how you manage your environment.
 ### CPU only (default)
 
 ```bash
+# uv (recommended):
+uv sync --frozen --no-build-isolation-package jaxtra --reinstall-package jaxtra
+
+# pip:
 pip install -e . --no-build-isolation
-# or with uv:
-uv sync --reinstall-package jaxtra --no-build-isolation
 ```
 
-### CPU + GPU (requires CUDA toolkit)
+### CPU + GPU (requires CUDA 12+ toolkit)
 
 ```bash
-pip install -e ".[gpu]" --no-build-isolation
+# uv (recommended):
+uv sync --frozen --extra cuda13 --no-build-isolation-package jaxtra --reinstall-package jaxtra
+
+# pip:
+pip install -e ".[cuda13]" --no-build-isolation
 ```
 
-`--no-build-isolation` is required because the CMake build needs `jax` and
-`jaxlib` (for the XLA FFI headers) to already be present in the environment.
+`--no-build-isolation` / `--no-build-isolation-package` is required because
+the CMake build needs `jax` and `jaxlib` (for the XLA FFI headers) to already
+be present in the environment.
 
-If that still pulls stale build artifacts, wipe the CMake cache first:
+If the build picks up stale artifacts, wipe the CMake cache first:
 
 ```bash
-rm -rf _skbuild build
-pip install -e . --no-build-isolation          # or: pip install -e ".[gpu]" --no-build-isolation for GPU
+rm -f CMakeCache.txt cmake_install.cmake build.ninja && rm -rf CMakeFiles _deps
 ```
 
-`scikit-build-core` with `editable.mode = "inplace"` (set in `pyproject.toml`)
-writes `_jaxtra*.so` (and `_jaxtra_cuda*.so` when built) directly into the
-source tree, so the rebuilt extension is picked up immediately.
+then re-run the install command above. `scikit-build-core` with
+`editable.mode = "inplace"` (set in `pyproject.toml`) writes `_jaxtra*.so`
+(and `_jaxtra_cuda*.so` when built) directly into the source tree, so the
+rebuilt extension is picked up immediately.
 
-Verify both extensions load cleanly:
+Verify the extensions load cleanly:
 
 ```bash
+# uv:
+uv run --locked python -c "import jaxtra"
+
+# pip:
 python -c "import jaxtra"
 ```
 
@@ -428,11 +443,11 @@ pytest tests/ -v
 
 | Step                                                                       | File(s)                                  |
 | -------------------------------------------------------------------------- | ---------------------------------------- |
-| Declare kernel struct + extern templates                                   | `csrc/lapack_kernels.h`                  |
-| Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `csrc/lapack_kernels.cc`                 |
-| Add macro, `initialize()` assignments, `registrations()` entries           | `csrc/jaxtra_module.cc`                  |
+| Declare kernel struct + extern templates                                   | `jaxlib/cpu/lapack_kernels.h`                  |
+| Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `jaxlib/cpu/lapack_kernels.cc`                 |
+| Add macro, `initialize()` assignments, `registrations()` entries           | `jaxlib/cpu/jaxtra_module.cc`                  |
 | Add new `.cc` source if needed                                             | `CMakeLists.txt`                         |
-| Rebuild: `pip install -e . --no-build-isolation`                           | —                                        |
+| Rebuild (see § 2)                                                          | —                                        |
 | Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_src/lax/linalg.py`              |
 | High-level wrapper                                                         | `jaxtra/scipy/linalg.py` (if applicable) |
 | Parametrized correctness + JIT + vmap tests                                | `tests/`                                 |
@@ -441,11 +456,11 @@ pytest tests/ -v
 
 | Step                                                                               | File(s)                                     |
 | ---------------------------------------------------------------------------------- | ------------------------------------------- |
-| Declare cuSolver wrapper templates                                                 | `csrc/gpu/jaxlib/gpu/solver_interface.h`    |
-| Implement cuSolver wrappers                                                        | `csrc/gpu/jaxlib/gpu/solver_interface.cc`   |
-| Add `gpusolverDn*` macros                                                          | `csrc/gpu/jaxlib/gpu/vendor.h`              |
-| Declare FFI handler symbol                                                         | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.h`  |
-| Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `csrc/gpu/jaxlib/gpu/solver_kernels_ffi.cc` |
-| Register GPU target in `registrations()`                                           | `csrc/jaxtra_cuda_module.cc`                |
-| Rebuild: `pip install -e ".[gpu]" --no-build-isolation`                            | —                                           |
+| Declare cuSolver wrapper templates                                                 | `jaxlib/gpu/solver_interface.h`    |
+| Implement cuSolver wrappers                                                        | `jaxlib/gpu/solver_interface.cc`   |
+| Add `gpusolverDn*` macros                                                          | `jaxlib/gpu/vendor.h`              |
+| Declare FFI handler symbol                                                         | `jaxlib/gpu/solver_kernels_ffi.h`  |
+| Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `jaxlib/gpu/solver_kernels_ffi.cc` |
+| Register GPU target in `registrations()`                                           | `jaxlib/cuda/jaxtra_cuda_module.cc`                |
+| Rebuild with `--extra cuda13` (see § 2)                                            | —                                           |
 | GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`                 |

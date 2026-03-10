@@ -19,14 +19,14 @@ Quick start section.
 
 | Layer               | File(s)                                                      | What lives here                                                                                             |
 | ------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| C++ kernel          | `csrc/lapack_kernels.{h,cc}`                                 | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop                        |
-| Module registration | `csrc/jaxtra_module.cc`                                      | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()`                |
+| C++ kernel          | `jaxlib/cpu/lapack_kernels.{h,cc}`                                 | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop                        |
+| Module registration | `jaxlib/cpu/jaxtra_module.cc`                                      | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()`                |
 | Lib wrappers        | `jaxtra/_src/lib/lapack.py`, `jaxtra/_src/lib/gpu_solver.py` | Extension loading, `registrations()`, `batch_partitionable_targets()`, `prepare_lapack_call()`              |
 | JAX primitive       | `jaxtra/_src/lax/linalg.py`                                  | `ormqr_p`, shape rule, Python fallback lowering, CPU/GPU FFI lowering, `register_module_custom_calls` calls |
 | Public API          | `jaxtra/scipy/linalg.py`                                     | `qr_multiply` wrapper                                                                                       |
 
-GPU path mirrors the same C++ layers under `csrc/gpu/` and
-`csrc/jaxtra_cuda_module.cc`.
+GPU path mirrors the same C++ layers under `jaxlib/gpu/` and
+`jaxlib/cuda/jaxtra_cuda_module.cc`.
 
 ---
 
@@ -39,6 +39,8 @@ background so dependencies are ready by the time you need them:
 ```bash
 # Install all deps (frozen lock file, build jaxtra in-place)
 uv sync --frozen --extra test --no-build-isolation-package jaxtra
+# With GPU support (requires CUDA 12+ toolkit):
+uv sync --frozen --extra test --extra cuda13 --no-build-isolation-package jaxtra
 ```
 
 ```bash
@@ -77,7 +79,7 @@ uv run --locked pytest tests/ -v
 ### Rebuilding after C++ changes
 
 Python-only changes (anything under `jaxtra/`) take effect immediately.
-After **any** edit to `csrc/`, rebuild before testing. See
+After **any** edit to `jaxlib/cpu/` or `jaxlib/cuda/`, rebuild before testing. See
 **CONTRIBUTING.md § 2. Rebuilding the C extension** for the exact commands
 and how to wipe stale CMake cache.
 
