@@ -38,8 +38,7 @@ dependencies = [
 # The build itself still requires the CUDA development toolkit on the build machine.
 cuda12 = ["jax[cuda12]"]
 cuda13 = ["jax[cuda13]"]
-test = ["pytest", "pre-commit"]
-benchmark = ["matplotlib", "pandas"]
+dev = ["pytest", "pre-commit", "matplotlib", "pandas"]
 docs = [
   "sphinx>=7.3",
   "sphinx-book-theme>=1.1",

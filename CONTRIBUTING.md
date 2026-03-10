@@ -15,6 +15,60 @@ when adding a new routine from scratch.
 
 ---
 
+## Rebuilding the C extension
+
+After any C++ change, rebuild and reinstall the extension in-place. The right
+command depends on how you manage your environment.
+
+### CPU only (default)
+
+```bash
+# uv (recommended):
+uv sync --frozen --extra dev --no-build-isolation-package jaxtra --reinstall-package jaxtra
+
+# pip:
+pip install -e ".[dev]" --no-build-isolation
+```
+
+### CPU + GPU (requires CUDA 12+ toolkit)
+
+```bash
+# uv (recommended):
+uv sync --frozen --extra dev --extra cuda13 --no-build-isolation-package jaxtra --reinstall-package jaxtra
+
+# pip:
+pip install -e ".[dev,cuda13]" --no-build-isolation
+```
+
+`--no-build-isolation` / `--no-build-isolation-package` is required because
+the CMake build needs `jax` and `jaxlib` (for the XLA FFI headers) to already
+be present in the environment.
+
+### Clearing stale CMake cache
+
+If the build picks up stale artifacts, wipe the CMake cache first:
+
+```bash
+rm -f CMakeCache.txt cmake_install.cmake build.ninja && rm -rf CMakeFiles _deps
+```
+
+then re-run the install command above. `scikit-build-core` with
+`editable.mode = "inplace"` (set in `pyproject.toml`) writes `_jaxtra*.so`
+(and `_jaxtra_cuda*.so` when built) directly into the source tree, so the
+rebuilt extension is picked up immediately.
+
+### Verify the build
+
+```bash
+# uv:
+uv run --locked python -c "import jaxtra"
+
+# pip:
+python -c "import jaxtra"
+```
+
+---
+
 ## Repository layout
 
 ```
@@ -241,67 +295,9 @@ make_entry(JAX_GPU_PREFIX "solver_mynew_ffi",
 
 ### Building the GPU extension
 
-```bash
-# uv (recommended):
-uv sync --frozen --extra cuda13 --no-build-isolation-package jaxtra --reinstall-package jaxtra
-
-# pip:
-pip install -e ".[cuda13]" --no-build-isolation
-```
+See *Rebuilding the C extension → CPU + GPU* at the top for the build commands.
 
 CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. Abseil is fetched automatically via `FetchContent` if not installed system-wide. Override with `JAXTRA_CUDA=ON` to make CUDA required (fail if absent).
-
----
-
-## 2. Rebuilding the C extension
-
-After any C++ change, rebuild and reinstall the extension in-place. The right
-command depends on how you manage your environment.
-
-### CPU only (default)
-
-```bash
-# uv (recommended):
-uv sync --frozen --no-build-isolation-package jaxtra --reinstall-package jaxtra
-
-# pip:
-pip install -e . --no-build-isolation
-```
-
-### CPU + GPU (requires CUDA 12+ toolkit)
-
-```bash
-# uv (recommended):
-uv sync --frozen --extra cuda13 --no-build-isolation-package jaxtra --reinstall-package jaxtra
-
-# pip:
-pip install -e ".[cuda13]" --no-build-isolation
-```
-
-`--no-build-isolation` / `--no-build-isolation-package` is required because
-the CMake build needs `jax` and `jaxlib` (for the XLA FFI headers) to already
-be present in the environment.
-
-If the build picks up stale artifacts, wipe the CMake cache first:
-
-```bash
-rm -f CMakeCache.txt cmake_install.cmake build.ninja && rm -rf CMakeFiles _deps
-```
-
-then re-run the install command above. `scikit-build-core` with
-`editable.mode = "inplace"` (set in `pyproject.toml`) writes `_jaxtra*.so`
-(and `_jaxtra_cuda*.so` when built) directly into the source tree, so the
-rebuilt extension is picked up immediately.
-
-Verify the extensions load cleanly:
-
-```bash
-# uv:
-uv run --locked python -c "import jaxtra"
-
-# pip:
-python -c "import jaxtra"
-```
 
 ---
 
@@ -447,7 +443,7 @@ pytest tests/ -v
 | Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `jaxlib/cpu/lapack_kernels.cc`           |
 | Add macro, `initialize()` assignments, `registrations()` entries           | `jaxlib/cpu/jaxtra_module.cc`            |
 | Add new `.cc` source if needed                                             | `CMakeLists.txt`                         |
-| Rebuild (see § 2)                                                          | —                                        |
+| Rebuild (see *Rebuilding the C extension* at top)                                                          | —                                        |
 | Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_src/lax/linalg.py`              |
 | High-level wrapper                                                         | `jaxtra/scipy/linalg.py` (if applicable) |
 | Parametrized correctness + JIT + vmap tests                                | `tests/`                                 |
@@ -462,5 +458,5 @@ pytest tests/ -v
 | Declare FFI handler symbol                                                         | `jaxlib/gpu/solver_kernels_ffi.h`   |
 | Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `jaxlib/gpu/solver_kernels_ffi.cc`  |
 | Register GPU target in `registrations()`                                           | `jaxlib/cuda/jaxtra_cuda_module.cc` |
-| Rebuild with `--extra cuda13` (see § 2)                                            | —                                   |
+| Rebuild with `--extra cuda13` (see *Rebuilding the C extension* at top)                                            | —                                   |
 | GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`         |

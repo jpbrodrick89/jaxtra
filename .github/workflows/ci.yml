@@ -38,7 +38,7 @@ jobs:
           enable-caching: true
           python-version: ${{ matrix.python-version }}
       - name: Install (build + runtime + test deps)
-        run: uv sync --frozen --extra test --no-build-isolation-package jaxtra
+        run: uv sync --frozen --extra dev --no-build-isolation-package jaxtra
       - name: Run tests
         run: uv run --locked pytest tests/
 

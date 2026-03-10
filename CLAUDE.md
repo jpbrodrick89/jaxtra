@@ -38,9 +38,9 @@ background so dependencies are ready by the time you need them:
 
 ```bash
 # Install all deps (frozen lock file, build jaxtra in-place)
-uv sync --frozen --extra test --no-build-isolation-package jaxtra
+uv sync --frozen --extra dev --no-build-isolation-package jaxtra
 # With GPU support (requires CUDA 12+ toolkit):
-uv sync --frozen --extra test --extra cuda13 --no-build-isolation-package jaxtra
+uv sync --frozen --extra dev --extra cuda13 --no-build-isolation-package jaxtra
 ```
 
 ```bash
