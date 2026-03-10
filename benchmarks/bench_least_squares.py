@@ -6,7 +6,7 @@ For an overdetermined system A @ x ≈ b:
   jaxtra     : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
   dense QR   : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
   jax lstsq  : jax.numpy.linalg.lstsq  (SVD-based, JAX arrays)
-  scipy gelsy: scipy.linalg.lstsq(lapack_driver="gelsy")  (CPU cols only: not 200 or 512)
+  scipy dgels : scipy.linalg.lapack.dgels  (QR, no pivoting, CPU cols only: not 200 or 512)
 
 Results are written to  benchmarks/results/bench_least_squares[_gpu].csv
 Plots are written to    benchmarks/results/bench_cols{20,50,100}[_gpu].png
@@ -68,10 +68,10 @@ def _jax_lstsq(A, b):
     return x
 
 
-def _scipy_gelsy_solve(A_np, b_np):
-    """scipy.linalg.lstsq with GELSY driver (QR with column pivoting)."""
-    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np, lapack_driver="gelsy")
-    return x
+def _scipy_gels_solve(A_np, b_np):
+    """scipy.linalg.lapack.dgels — QR-based least squares, no pivoting."""
+    _, b1, _ = scipy_linalg.lapack.dgels(A_np, b_np[:, None])
+    return b1[:A_np.shape[1], 0]
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ if args.gpu:
     COL_COUNTS = COL_COUNTS + [200, 512]
     ROW_SIZES  = ROW_SIZES + [50_000, 100_000, 200_000]
 
-# Columns for which scipy gelsy (CPU) is too slow / not applicable on GPU
+# Columns for which scipy gels (CPU) is too slow / not applicable on GPU
 GPU_ONLY_COLS = {200, 512}
 
 N_WARMUP = 5  if args.gpu else 1
@@ -123,7 +123,7 @@ METHODS = [
     ("jaxtra (ORMQR)", "#1f77b4", "o"),
     ("dense QR",       "#ff7f0e", "s"),
     ("jax lstsq",      "#2ca02c", "^"),
-    ("scipy gelsy",    "#9467bd", "D"),
+    ("scipy dgels",    "#9467bd", "D"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -133,15 +133,15 @@ METHODS = [
 records = []   # list of dicts written to CSV
 
 for n_cols in COL_COUNTS:
-    run_gelsy = n_cols not in GPU_ONLY_COLS
+    run_gels = n_cols not in GPU_ONLY_COLS
     print(f"\nn_cols = {n_cols}")
     hdr = (f"  {'n_rows':>7}  {'jaxtra (ms)':>12}  {'dense QR (ms)':>14}  "
            f"{'jax lstsq (ms)':>15}")
-    if run_gelsy:
-        hdr += f"  {'scipy gelsy (ms)':>17}"
+    if run_gels:
+        hdr += f"  {'scipy gels (ms)':>17}"
     hdr += f"  {'vs QR':>6}  {'vs lstsq':>9}"
     print(hdr)
-    print("  " + "-" * (78 + (19 if run_gelsy else 0)))
+    print("  " + "-" * (78 + (19 if run_gels else 0)))
 
     for n_rows in ROW_SIZES:
         if n_rows < n_cols:
@@ -170,15 +170,15 @@ for n_cols in COL_COUNTS:
                f"{t_dense*1e3:14.2f}  "
                f"{t_lstsq*1e3:15.2f}")
 
-        if run_gelsy:
-            t_gelsy = time_numpy_fn(_scipy_gelsy_solve, A_np, b_np,
+        if run_gels:
+            t_gels = time_numpy_fn(_scipy_gels_solve, A_np, b_np,
                                      n_warmup=N_WARMUP, n_repeat=N_REPEAT)
             records.append({"n_rows": n_rows, "n_cols": n_cols,
-                             "method": "scipy gelsy", "time_ms": t_gelsy * 1e3})
-            row += f"  {t_gelsy*1e3:17.2f}"
-            gelsy_ratio = f"{t_gelsy/t_jaxtra:8.2f}x"
+                             "method": "scipy gels", "time_ms": t_gels * 1e3})
+            row += f"  {t_gels*1e3:17.2f}"
+            gels_ratio = f"{t_gels/t_jaxtra:8.2f}x"
         else:
-            gelsy_ratio = ""
+            gels_ratio = ""
 
         row += (f"  {t_dense/t_jaxtra:6.2f}x"
                 f"  {t_lstsq/t_jaxtra:8.2f}x")
