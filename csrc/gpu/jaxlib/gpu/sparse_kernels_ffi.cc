@@ -186,13 +186,26 @@ ffi::Error GpsvImpl(int64_t batch, int64_t m, int64_t nrhs,
         x_ptr, b_ptr, b.size_bytes(), gpuMemcpyDeviceToDevice, stream));
   }
 
+  // gpsvInterleavedBatch (QR, algo=0) overwrites the diagonal arrays in place
+  // with factorization factors.  Allocate scratch copies so we can restore
+  // the originals before each RHS solve.
+  size_t diag_elems = static_cast<size_t>(batch) * m_v;
+  size_t diag_bytes = diag_elems * sizeof(T);
+  FFI_ASSIGN_OR_RETURN(auto ds_work, AllocateWorkspace<T>(scratch, diag_elems, "gpsv_ds"));
+  FFI_ASSIGN_OR_RETURN(auto dl_work, AllocateWorkspace<T>(scratch, diag_elems, "gpsv_dl"));
+  FFI_ASSIGN_OR_RETURN(auto d_work,  AllocateWorkspace<T>(scratch, diag_elems, "gpsv_d"));
+  FFI_ASSIGN_OR_RETURN(auto du_work, AllocateWorkspace<T>(scratch, diag_elems, "gpsv_du"));
+  FFI_ASSIGN_OR_RETURN(auto dw_work, AllocateWorkspace<T>(scratch, diag_elems, "gpsv_dw"));
+
+  auto ds_src = static_cast<const T*>(ds.untyped_data());
+  auto dl_src = static_cast<const T*>(dl.untyped_data());
+  auto d_src  = static_cast<const T*>(d.untyped_data());
+  auto du_src = static_cast<const T*>(du.untyped_data());
+  auto dw_src = static_cast<const T*>(dw.untyped_data());
+
   FFI_ASSIGN_OR_RETURN(size_t buf_bytes,
                        GpsvBufferSize<T>(handle.get(), m_v, batch_v,
-                                         static_cast<const T*>(ds.untyped_data()),
-                                         static_cast<const T*>(dl.untyped_data()),
-                                         static_cast<const T*>(d.untyped_data()),
-                                         static_cast<const T*>(du.untyped_data()),
-                                         static_cast<const T*>(dw.untyped_data()),
+                                         ds_src, dl_src, d_src, du_src, dw_src,
                                          x_ptr));
 
   // Allocate workspace from XLA scratch allocator.
@@ -203,18 +216,22 @@ ffi::Error GpsvImpl(int64_t batch, int64_t m, int64_t nrhs,
 
   // Buffers arrive in interleaved-batch layout (dim 0 = batch, stride 1),
   // so cuSPARSE handles all batch elements in a single call.
-  // gpsvInterleavedBatch solves one RHS per call, so we loop over nrhs.
-  // algo=0 (QR) does not modify diagonal inputs, so reuse across nrhs is safe.
-  auto ds_data = static_cast<T*>(ds.untyped_data());
-  auto dl_data = static_cast<T*>(dl.untyped_data());
-  auto d_data  = static_cast<T*>(d.untyped_data());
-  auto du_data = static_cast<T*>(du.untyped_data());
-  auto dw_data = static_cast<T*>(dw.untyped_data());
-
+  // Restore the original diagonals before each RHS call since cuSPARSE
+  // overwrites them with QR factors.
   for (int64_t j = 0; j < nrhs; ++j) {
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        ds_work, ds_src, diag_bytes, gpuMemcpyDeviceToDevice, stream));
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        dl_work, dl_src, diag_bytes, gpuMemcpyDeviceToDevice, stream));
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        d_work, d_src, diag_bytes, gpuMemcpyDeviceToDevice, stream));
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        du_work, du_src, diag_bytes, gpuMemcpyDeviceToDevice, stream));
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        dw_work, dw_src, diag_bytes, gpuMemcpyDeviceToDevice, stream));
     FFI_RETURN_IF_ERROR_STATUS(GpsvSolve<T>(
         handle.get(), m_v, batch_v,
-        ds_data, dl_data, d_data, du_data, dw_data,
+        ds_work, dl_work, d_work, du_work, dw_work,
         x_ptr + j * batch * m,
         buf));
   }
