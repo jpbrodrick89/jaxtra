@@ -19,8 +19,8 @@ Quick start section.
 
 | Layer               | File(s)                                                      | What lives here                                                                                             |
 | ------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| C++ kernel          | `jaxlib/cpu/lapack_kernels.{h,cc}`                                 | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop                        |
-| Module registration | `jaxlib/cpu/jaxtra_module.cc`                                      | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()`                |
+| C++ kernel          | `jaxlib/cpu/lapack_kernels.{h,cc}`                           | `OrthogonalQrMultiply<dtype>` — LAPACK function pointer, workspace query, batch loop                        |
+| Module registration | `jaxlib/cpu/jaxtra_module.cc`                                | XLA FFI handler macros, `initialize()` (loads LAPACK pointers from SciPy), `registrations()`                |
 | Lib wrappers        | `jaxtra/_src/lib/lapack.py`, `jaxtra/_src/lib/gpu_solver.py` | Extension loading, `registrations()`, `batch_partitionable_targets()`, `prepare_lapack_call()`              |
 | JAX primitive       | `jaxtra/_src/lax/linalg.py`                                  | `ormqr_p`, shape rule, Python fallback lowering, CPU/GPU FFI lowering, `register_module_custom_calls` calls |
 | Public API          | `jaxtra/scipy/linalg.py`                                     | `qr_multiply` wrapper                                                                                       |

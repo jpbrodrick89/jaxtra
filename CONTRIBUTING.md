@@ -443,9 +443,9 @@ pytest tests/ -v
 
 | Step                                                                       | File(s)                                  |
 | -------------------------------------------------------------------------- | ---------------------------------------- |
-| Declare kernel struct + extern templates                                   | `jaxlib/cpu/lapack_kernels.h`                  |
-| Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `jaxlib/cpu/lapack_kernels.cc`                 |
-| Add macro, `initialize()` assignments, `registrations()` entries           | `jaxlib/cpu/jaxtra_module.cc`                  |
+| Declare kernel struct + extern templates                                   | `jaxlib/cpu/lapack_kernels.h`            |
+| Implement `GetWorkspaceSize` + `Kernel` + instantiations                   | `jaxlib/cpu/lapack_kernels.cc`           |
+| Add macro, `initialize()` assignments, `registrations()` entries           | `jaxlib/cpu/jaxtra_module.cc`            |
 | Add new `.cc` source if needed                                             | `CMakeLists.txt`                         |
 | Rebuild (see § 2)                                                          | —                                        |
 | Shape rule, Python fallback, CPU/GPU lowering, `standard_linalg_primitive` | `jaxtra/_src/lax/linalg.py`              |
@@ -454,13 +454,13 @@ pytest tests/ -v
 
 ### GPU path (optional, requires CUDA)
 
-| Step                                                                               | File(s)                                     |
-| ---------------------------------------------------------------------------------- | ------------------------------------------- |
-| Declare cuSolver wrapper templates                                                 | `jaxlib/gpu/solver_interface.h`    |
-| Implement cuSolver wrappers                                                        | `jaxlib/gpu/solver_interface.cc`   |
-| Add `gpusolverDn*` macros                                                          | `jaxlib/gpu/vendor.h`              |
-| Declare FFI handler symbol                                                         | `jaxlib/gpu/solver_kernels_ffi.h`  |
-| Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `jaxlib/gpu/solver_kernels_ffi.cc` |
-| Register GPU target in `registrations()`                                           | `jaxlib/cuda/jaxtra_cuda_module.cc`                |
-| Rebuild with `--extra cuda13` (see § 2)                                            | —                                           |
-| GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`                 |
+| Step                                                                               | File(s)                             |
+| ---------------------------------------------------------------------------------- | ----------------------------------- |
+| Declare cuSolver wrapper templates                                                 | `jaxlib/gpu/solver_interface.h`     |
+| Implement cuSolver wrappers                                                        | `jaxlib/gpu/solver_interface.cc`    |
+| Add `gpusolverDn*` macros                                                          | `jaxlib/gpu/vendor.h`               |
+| Declare FFI handler symbol                                                         | `jaxlib/gpu/solver_kernels_ffi.h`   |
+| Implement `*Impl`, `*Dispatch`, `XLA_FFI_DEFINE_HANDLER_SYMBOL`                    | `jaxlib/gpu/solver_kernels_ffi.cc`  |
+| Register GPU target in `registrations()`                                           | `jaxlib/cuda/jaxtra_cuda_module.cc` |
+| Rebuild with `--extra cuda13` (see § 2)                                            | —                                   |
+| GPU target name in `_cpu_gpu_lowering` (already routes via `{prefix}solver_*_ffi`) | `jaxtra/_src/lax/linalg.py`         |
