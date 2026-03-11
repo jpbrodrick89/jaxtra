@@ -21,8 +21,8 @@ for _mod in ("jaxtra._jaxtra", "jaxtra._jaxtra_cuda"):
 # Project metadata
 # ---------------------------------------------------------------------------
 project = "jaxtra"
-author = "jpbrodrick89"
-copyright = "2026, jpbrodrick89"
+author = "Jonathan Brodrick"
+copyright = "2026, Jonathan Brodrick"
 release = "0.1.0"
 root_doc = "index"
 
@@ -49,6 +49,11 @@ napoleon_use_rtype = True
 # autodoc: show type annotations in signatures, not repeated in description.
 autodoc_typehints = "signature"
 autodoc_member_order = "bysource"
+autodoc_preserve_defaults = True
+autodoc_type_aliases = {
+    "ArrayLike": "ArrayLike",
+    "Array": "Array",
+}
 
 # ---------------------------------------------------------------------------
 # Intersphinx — cross-link to JAX, NumPy, and Python docs
@@ -56,6 +61,7 @@ autodoc_member_order = "bysource"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
     "jax": ("https://jax.readthedocs.io/en/latest", None),
 }
 
@@ -73,4 +79,23 @@ html_theme_options = {
     "show_navbar_depth": 2,
 }
 
-exclude_patterns = ["_build", "_autosummary", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+
+# ---------------------------------------------------------------------------
+# Copy benchmark images into the build so docstring .. figure:: directives
+# can reference them.  This avoids symlinks (fragile on Windows / CI) and
+# duplicating PNGs in the repo.
+# ---------------------------------------------------------------------------
+import shutil
+from pathlib import Path
+
+def setup(app):
+    app.connect("builder-inited", _copy_bench_images)
+
+def _copy_bench_images(app):
+    src = Path(app.srcdir).parent / "benchmarks" / "results"
+    dst = Path(app.srcdir) / "_bench_images"
+    if dst.exists():
+        shutil.rmtree(dst)
+    if src.exists():
+        shutil.copytree(src, dst)

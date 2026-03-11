@@ -167,8 +167,8 @@ N_WARMUP = 2
 N_REPEAT = 5
 
 METHODS = [
-    ("jaxtra (gbsv)",       "#1f77b4", "o"),
-    ("jaxtra (pbsv)",       "#17becf", "p"),
+    ("pentadiagonal_solve",       "#1f77b4", "o"),
+    ("pentadiagonal_solveh",       "#17becf", "p"),
     ("dense LU",            "#ff7f0e", "s"),
     ("JAX Cholesky",        "#9467bd", "D"),
     ("scipy solveh_banded", "#2ca02c", "^"),
@@ -181,9 +181,9 @@ METHODS = [
 
 records = []
 
-print(f"\n{'n':>7}  {'gbsv (ms)':>10}  {'pbsv (ms)':>10}  {'dense LU (ms)':>14}  "
+print(f"\n{'n':>7}  {'penta (ms)':>10}  {'pentah (ms)':>10}  {'dense LU (ms)':>14}  "
       f"{'JAX Chol (ms)':>14}  {'solveh_bnd (ms)':>16}  {'solve_bnd (ms)':>15}  "
-      f"{'pbsv/solveh':>12}")
+      f"{'pentah/solveh':>14}")
 print("-" * 120)
 
 for n in SIZES:
@@ -214,8 +214,8 @@ for n in SIZES:
     t_solve_bnd = time_numpy_fn(_scipy_solve_banded, ab_banded, b_np,
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
-    records.append({"n": n, "method": "jaxtra (gbsv)",       "time_ms": t_jaxtra    * 1e3})
-    records.append({"n": n, "method": "jaxtra (pbsv)",       "time_ms": t_pbsv      * 1e3})
+    records.append({"n": n, "method": "pentadiagonal_solve",       "time_ms": t_jaxtra    * 1e3})
+    records.append({"n": n, "method": "pentadiagonal_solveh",       "time_ms": t_pbsv      * 1e3})
     records.append({"n": n, "method": "dense LU",            "time_ms": t_dense     * 1e3})
     records.append({"n": n, "method": "JAX Cholesky",        "time_ms": t_jax_chol  * 1e3})
     records.append({"n": n, "method": "scipy solveh_banded", "time_ms": t_solveh    * 1e3})

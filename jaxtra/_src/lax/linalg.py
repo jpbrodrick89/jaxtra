@@ -1,11 +1,4 @@
-"""
-jaxtra._src.lax.linalg — ormqr and pentadiagonal_solve JAX primitives.
-
-Registers primitives using JAX's XLA FFI, backed by LAPACK (CPU) or
-cuSOLVER/cuSPARSE (GPU).  The LAPACK FFI targets are registered from
-jaxtra's C extension (_jaxtra.so); the GPU targets from _jaxtra_cuda.so
-when present.
-"""
+"""``jaxtra._src.lax.linalg`` — internal wrapper functions."""
 from __future__ import annotations
 
 from functools import partial
@@ -58,10 +51,10 @@ def ormqr(a: ArrayLike, taus: ArrayLike, c: ArrayLike, *,
   (``Q^H``).
 
   Args:
-    a: The Householder reflectors from :func:`geqrf` or :func:`geqp3`,
-      with shape ``[..., m, n]``.
-    taus: The Householder scalar factors from :func:`geqrf` or :func:`geqp3`,
-      with shape ``[..., k]``.
+    a: The Householder reflectors from ``jax._src.lax.linalg.geqrf`` or
+      ``jax._src.lax.linalg.geqp3``, with shape ``[..., m, n]``.
+    taus: The Householder scalar factors from ``jax._src.lax.linalg.geqrf``
+      or ``jax._src.lax.linalg.geqp3``, with shape ``[..., k]``.
     c: The matrix to multiply by Q, with shape ``[..., c_rows, c_cols]``.
     left: If ``True``, compute ``Q @ C``. If ``False``, compute ``C @ Q``.
     transpose: If ``True``, use ``Q^T`` (or ``Q^H`` for complex types).
@@ -171,37 +164,69 @@ register_cpu_gpu_lowering(ormqr_p, _ormqr_cpu_gpu_lowering)
 def pentadiagonal_solve(
     ds: ArrayLike, dl: ArrayLike, d: ArrayLike,
     du: ArrayLike, dw: ArrayLike, b: ArrayLike) -> Array:
-  """Solve a pentadiagonal linear system A X = B.
+  r"""Computes the solution of a pentadiagonal linear system.
 
-  The matrix A is stored as five diagonals following the cuSPARSE
-  ``gpsvInterleavedBatch`` convention::
+  This function computes the solution of a pentadiagonal linear system:
 
-      A[i, i-2] = ds[i]   (ds[0], ds[1] unused)
-      A[i, i-1] = dl[i]   (dl[0] unused)
-      A[i, i]   = d[i]
-      A[i, i+1] = du[i]   (du[n-1] unused)
-      A[i, i+2] = dw[i]   (dw[n-2], dw[n-1] unused)
+  .. math::
+    A \, X = B
 
   Args:
-    ds: Second sub-diagonal of A with shape ``[..., n]``.
-    dl: First sub-diagonal of A with shape ``[..., n]``.
-    d: Main diagonal of A with shape ``[..., n]``.
-    du: First super-diagonal of A with shape ``[..., n]``.
-    dw: Second super-diagonal of A with shape ``[..., n]``.
-    b: Right-hand side matrix with shape ``[..., n, k]``.
+    ds: A batch of vectors with shape ``[..., m]``.
+      The second lower diagonal of A: ``ds[i] := A[i, i-2]`` for i in ``[0, m)``.
+      Note that ``ds[0]`` and ``ds[1]`` are unused.
+    dl: A batch of vectors with shape ``[..., m]``.
+      The lower diagonal of A: ``dl[i] := A[i, i-1]`` for i in ``[0, m)``.
+      Note that ``dl[0] = 0``.
+    d: A batch of vectors with shape ``[..., m]``.
+      The middle diagonal of A: ``d[i] := A[i, i]`` for i in ``[0, m)``.
+    du: A batch of vectors with shape ``[..., m]``.
+      The upper diagonal of A: ``du[i] := A[i, i+1]`` for i in ``[0, m)``.
+      Note that ``du[m - 1] = 0``.
+    dw: A batch of vectors with shape ``[..., m]``.
+      The second upper diagonal of A: ``dw[i] := A[i, i+2]`` for i in ``[0, m)``.
+      Note that ``dw[m - 2]`` and ``dw[m - 1]`` are unused.
+    b: Right hand side matrix.
 
   Returns:
-    Solution X with the same shape as b.
+    Solution ``X`` of pentadiagonal system.
 
-  Note:
-    On GPU, the solver uses cuSPARSE's interleaved-batch format internally.
-    XLA will transpose inputs automatically if needed, but for best
-    performance with batched inputs (e.g. from ``vmap``), no user action is
-    required — the batching rule and XLA layout mechanism handle this.
+  See also:
+    - :func:`jax.lax.linalg.tridiagonal_solve`: Solves a tridiagonal system.
+    - :func:`pentadiagonal_solveh`: Solves a Hermitian/SPD pentadiagonal system
+      using banded Cholesky (faster when A is symmetric positive-definite).
 
-    GPU batch-dimension sharding (e.g. ``shard_map`` across the batch axis)
-    is not currently supported; all batch elements must reside on the same
-    device.
+  .. rubric:: Benchmarks
+
+  SPD pentadiagonal systems (float64) compared against
+  :func:`jax.numpy.linalg.solve` (dense LU),
+  :func:`jax.scipy.linalg.cho_factor` / :func:`jax.scipy.linalg.cho_solve`
+  (dense Cholesky), ``scipy.linalg.solve_banded``, and
+  ``scipy.linalg.solveh_banded``.
+
+  **CPU** — Both :func:`pentadiagonal_solve` and :func:`pentadiagonal_solveh`
+  achieve O(kn) scaling vs O(n³) for dense solvers, and match or beat scipy's
+  banded solvers while remaining fully ``jit`` / ``vmap`` / ``grad``
+  compatible.
+
+  .. figure:: /_bench_images/bench_banded.png
+     :alt: CPU benchmark: pentadiagonal solve
+     :width: 90%
+     :align: center
+
+  **GPU** — For a single system, GPU underperforms CPU for array sizes
+  below ~10 000 (and potentially higher), likely due to the inherently
+  sequential nature of banded solves limiting GPU utilisation. For batched
+  solves the GPU is likely to outperform CPU thanks to cuSPARSE
+  ``gpsvInterleavedBatch`` parallelism across independent systems. At large
+  n the banded O(kn) advantage over dense solvers grows with system size.
+
+  .. figure:: /_bench_images/bench_banded_gpu.png
+     :alt: GPU benchmark: pentadiagonal solve
+     :width: 90%
+     :align: center
+
+  See ``benchmarks/bench_banded.py`` for reproduction.
   """
   ds, dl, d, du, dw, b = core.standard_insert_pvary(ds, dl, d, du, dw, b)
   return pentadiagonal_solve_p.bind(ds, dl, d, du, dw, b)
@@ -388,26 +413,73 @@ def _hermitian_lower_diags(du, dw):
 def pentadiagonal_solveh(
     d: ArrayLike, du: ArrayLike, dw: ArrayLike,
     b: ArrayLike) -> Array:
-  """Solve a Hermitian pentadiagonal linear system A X = B.
+  r"""Computes the solution of a Hermitian pentadiagonal linear system.
 
-  The matrix A is Hermitian (symmetric for real types) and stored as its
-  upper-triangle diagonals following the LAPACK ``pbsv`` convention::
+  This function computes the solution of a Hermitian (symmetric for real
+  types) pentadiagonal linear system:
 
-      A[i, i]   = d[i]
-      A[i, i+1] = du[i]   (du[n-1] unused)
-      A[i, i+2] = dw[i]   (dw[n-2], dw[n-1] unused)
+  .. math::
+    A \, X = B
 
-  The lower triangle is implied: ``A[i, i-1] = conj(du[i-1])``,
-  ``A[i, i-2] = conj(dw[i-2])``.
+  Only the upper-triangle diagonals are stored; the lower triangle is implied
+  by symmetry: ``A[i, i-1] = conj(du[i-1])``, ``A[i, i-2] = conj(dw[i-2])``.
 
   Args:
-    d: Main diagonal of A with shape ``[..., n]``.
-    du: First super-diagonal of A with shape ``[..., n]``.
-    dw: Second super-diagonal of A with shape ``[..., n]``.
-    b: Right-hand side matrix with shape ``[..., n, k]``.
+    d: A batch of vectors with shape ``[..., m]``.
+      The middle diagonal of A: ``d[i] := A[i, i]`` for i in ``[0, m)``.
+    du: A batch of vectors with shape ``[..., m]``.
+      The upper diagonal of A: ``du[i] := A[i, i+1]`` for i in ``[0, m)``.
+      Note that ``du[m - 1] = 0``.
+    dw: A batch of vectors with shape ``[..., m]``.
+      The second upper diagonal of A: ``dw[i] := A[i, i+2]`` for i in ``[0, m)``.
+      Note that ``dw[m - 2]`` and ``dw[m - 1]`` are unused.
+    b: Right hand side matrix.
 
   Returns:
-    Solution X with the same shape as b.
+    Solution ``X`` of Hermitian pentadiagonal system.
+
+  Note:
+    On GPU (and other platforms without a dedicated FFI target), this falls
+    back to :func:`pentadiagonal_solve` by reconstructing the lower diagonals
+    from symmetry. The dedicated LAPACK ``pbsv`` (banded Cholesky) kernel is
+    only used on CPU.
+
+  See also:
+    - :func:`jax.lax.linalg.tridiagonal_solve`: Solves a tridiagonal system.
+    - :func:`pentadiagonal_solve`: Solves a general (non-symmetric)
+      pentadiagonal system.
+
+  .. rubric:: Benchmarks
+
+  SPD pentadiagonal systems (float64) compared against
+  :func:`jax.numpy.linalg.solve` (dense LU),
+  :func:`jax.scipy.linalg.cho_factor` / :func:`jax.scipy.linalg.cho_solve`
+  (dense Cholesky), ``scipy.linalg.solve_banded``, and
+  ``scipy.linalg.solveh_banded``.
+
+  **CPU** — Both :func:`pentadiagonal_solve` and :func:`pentadiagonal_solveh`
+  achieve O(kn) scaling vs O(n³) for dense solvers, and match or beat scipy's
+  banded solvers while remaining fully ``jit`` / ``vmap`` / ``grad``
+  compatible.
+
+  .. figure:: /_bench_images/bench_banded.png
+     :alt: CPU benchmark: pentadiagonal solve
+     :width: 90%
+     :align: center
+
+  **GPU** — For a single system, GPU underperforms CPU for array sizes
+  below ~10 000 (and potentially higher), likely due to the inherently
+  sequential nature of banded solves limiting GPU utilisation. For batched
+  solves the GPU is likely to outperform CPU thanks to cuSPARSE
+  ``gpsvInterleavedBatch`` parallelism across independent systems. At large
+  n the banded O(kn) advantage over dense solvers grows with system size.
+
+  .. figure:: /_bench_images/bench_banded_gpu.png
+     :alt: GPU benchmark: pentadiagonal solve
+     :width: 90%
+     :align: center
+
+  See ``benchmarks/bench_banded.py`` for reproduction.
   """
   d, du, dw, b = core.standard_insert_pvary(d, du, dw, b)
   return pentadiagonal_solveh_p.bind(d, du, dw, b)

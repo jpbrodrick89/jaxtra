@@ -1,9 +1,4 @@
-"""``jaxtra.scipy.linalg`` – mirrors the interface of ``jax.scipy.linalg``.
-
-Currently exposes:
-
-* :func:`qr_multiply` – combined QR decomposition + Q-multiply step.
-"""
+"""``jaxtra.scipy.linalg`` – mirrors the interface of ``jax.scipy.linalg``."""
 
 from __future__ import annotations
 
@@ -77,7 +72,7 @@ def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
 
   See also:
     - :func:`jax.scipy.linalg.qr`: SciPy-style QR decomposition API
-    - :func:`jax.lax.linalg.ormqr`: XLA-style Q-multiply primitive
+    - :func:`jaxtra._src.lax.linalg.ormqr`: XLA-style Q-multiply primitive
 
   Examples:
     Use :func:`qr_multiply` to efficiently solve a least-squares problem.
@@ -92,6 +87,79 @@ def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
     >>> x = jax.scipy.linalg.solve_triangular(R, Qtb)
     >>> jnp.allclose(A.T @ A @ x, A.T @ b)
     Array(True, dtype=bool)
+
+  .. rubric:: Benchmarks
+
+  Least-squares solve **A x ≈ b** (float64) compared against
+  :func:`jax.numpy.linalg.qr` (dense QR, Q materialised),
+  :func:`jax.numpy.linalg.lstsq` (SVD-based), and
+  :obj:`scipy.linalg.lapack.dgels` (LAPACK QR, CPU only).
+
+  **CPU** — On tall, skinny systems (M ≫ N, N ≈ 50–200), :func:`qr_multiply`
+  is **1.7–2.5×** faster than dense QR and **2–3.4×** faster than
+  :func:`~jax.numpy.linalg.lstsq` at 100 columns / 5 000–20 000 rows.
+  Speedups grow with the number of columns.
+
+  **GPU** — For column counts below ~200, :func:`qr_multiply` can be
+  *slower* than dense QR because cuSOLVER's ``orgqr`` + highly optimised
+  cuBLAS GEMM/GEMV kernels are hard to beat. At higher column counts
+  (200–512) avoiding Q materialisation helps, but speedups are typically
+  <10% for the same reason.
+
+  See ``benchmarks/bench_least_squares.py`` for reproduction.
+
+  .. raw:: html
+
+     <details><summary>CPU benchmarks</summary>
+
+  .. figure:: /_bench_images/bench_cols20.png
+     :alt: CPU benchmark: 20 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols50.png
+     :alt: CPU benchmark: 50 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols100.png
+     :alt: CPU benchmark: 100 columns
+     :width: 90%
+     :align: center
+
+  .. raw:: html
+
+     </details>
+     <details><summary>GPU benchmarks</summary>
+
+  .. figure:: /_bench_images/bench_cols20_gpu.png
+     :alt: GPU benchmark: 20 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols50_gpu.png
+     :alt: GPU benchmark: 50 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols100_gpu.png
+     :alt: GPU benchmark: 100 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols200_gpu.png
+     :alt: GPU benchmark: 200 columns
+     :width: 90%
+     :align: center
+
+  .. figure:: /_bench_images/bench_cols512_gpu.png
+     :alt: GPU benchmark: 512 columns
+     :width: 90%
+     :align: center
+
+  .. raw:: html
+
+     </details>
   """
   del overwrite_a, overwrite_c  # unused
   a, c = promote_dtypes_inexact(jnp.asarray(a), jnp.asarray(c))

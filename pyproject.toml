@@ -15,7 +15,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
-  { name = "jpbrodrick89", email = "jonathan.brodrick@simulation.science" },
+  { name = "Jonathan Brodrick", email = "jonathan.brodrick@simulation.science" },
 ]
 keywords = ["jax", "lapack", "linear-algebra", "xla-ffi", "cuda", "cusolver"]
 classifiers = [
