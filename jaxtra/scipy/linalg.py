@@ -293,13 +293,10 @@ def ldl(
       (for Hermitian) or with ``lu.T`` (for symmetric).
 
   See Also:
-    :func:`jaxtra.scipy.linalg.ldl_solve`: Solve ``A @ x = b`` using the
-      raw LDL factorization (JIT-compatible).
-    :func:`jaxtra._src.lax.linalg.ldl`: Raw primitive returning
-      ``(factors, ipiv)`` directly (JIT-compatible).
+    :func:`jaxtra.scipy.linalg.ldl_solve`: Solve ``A @ x = b`` using the raw LDL factorization (JIT-compatible).
+    :func:`jaxtra._src.lax.linalg.ldl`: Raw primitive returning ``(factors, ipiv)`` directly (JIT-compatible).
     :func:`jax.scipy.linalg.lu_factor`: Analogous LU factorization.
-    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization
-      (for positive-definite matrices).
+    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization (for positive-definite matrices).
 
   Examples:
     Factorize and solve a symmetric indefinite system ``A @ x = b``:

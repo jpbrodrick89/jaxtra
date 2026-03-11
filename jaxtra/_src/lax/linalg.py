@@ -89,11 +89,9 @@ def ldl(
 
   See Also:
     :func:`ldl_solve`: Solve ``A @ x = b`` given the factorization.
-    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible interface returning
-      ``(lu, d, perm)`` directly.
+    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible interface returning ``(lu, d, perm)`` directly.
     :func:`jax.scipy.linalg.lu_factor`: Analogous LU factorization.
-    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization
-      (for positive-definite matrices).
+    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization (for positive-definite matrices).
 
   Examples:
     Factorize a symmetric indefinite matrix:
@@ -138,12 +136,9 @@ def ldl_solve(
 
   See Also:
     :func:`ldl`: Compute the LDL factorization.
-    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible LDL interface returning
-      ``(lu, d, perm)``.
-    :func:`jax.scipy.linalg.lu_solve`: Analogous solve from an LU
-      factorization.
-    :func:`jax.scipy.linalg.cho_solve`: Analogous solve from a Cholesky
-      factorization.
+    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible LDL interface returning ``(lu, d, perm)``.
+    :func:`jax.scipy.linalg.lu_solve`: Analogous solve from an LU factorization.
+    :func:`jax.scipy.linalg.cho_solve`: Analogous solve from a Cholesky factorization.
 
   Examples:
     Solve a symmetric indefinite system ``A @ x = b``:
@@ -163,14 +158,16 @@ def ldl_solve(
   indefinite systems (float64 / complex128, CPU, n = 50 -- 5000) compared
   against :func:`jax.scipy.linalg.solve` (dense LU).
 
-  **Complex Hermitian** — LDL is consistently faster than LU across all
-  tested sizes, exploiting Hermitian structure via LAPACK ``hetrf`` /
-  ``hetrs``.
+  **Complex Hermitian** — LDL is consistently **1.4–2.2×** faster than LU
+  across all tested sizes on Linux (OpenBLAS), exploiting Hermitian structure
+  via LAPACK ``hetrf`` / ``hetrs``.
 
   **Real symmetric** — Performance depends on the underlying LAPACK vendor.
-  On Linux (OpenBLAS / MKL), LDL is **1.2 -- 1.7x** faster; on macOS
-  (Accelerate), ``getrf`` is more optimized than ``sytrf`` so LU may be
-  faster for purely real solves.
+  On Linux (OpenBLAS), LDL is **1.5–2.3×** faster at small sizes (n ≤ 200),
+  roughly equal at n = 500–1000, and **1.35–1.64×** faster at large sizes
+  (n ≥ 2000).  On macOS (Accelerate), ``getrf`` is more aggressively optimised
+  than ``sytrf`` so LU may be faster for purely real symmetric solves at medium
+  sizes — benchmark both paths on your hardware.
 
   .. figure:: /_bench_images/bench_ldl.png
      :alt: LDL vs LU full solve benchmark
