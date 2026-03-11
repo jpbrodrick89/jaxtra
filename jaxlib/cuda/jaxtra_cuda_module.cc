@@ -1,5 +1,5 @@
 // nanobind module for jaxtra GPU (CUDA) support: registers the cuSolver ormqr
-// XLA FFI handler so JAX can dispatch ormqr to the GPU.
+// and cuSparse gpsvInterleavedBatch XLA FFI handlers.
 //
 // Mirrors jaxlib/gpu/solver.cc (Registrations / NB_MODULE) and the ormqr
 // entry in jaxlib/gpu/gpu_kernels.cc (XLA_FFI_REGISTER_HANDLER), adapted for
@@ -18,6 +18,7 @@
 #include <nanobind/stl/string.h>
 
 #include "jaxlib/gpu/solver_kernels_ffi.h"
+#include "jaxlib/gpu/sparse_kernels_ffi.h"
 #include "jaxlib/gpu/vendor.h"
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
@@ -29,14 +30,11 @@ namespace nb = nanobind;
 using namespace jax::JAX_GPU_NAMESPACE;
 
 NB_MODULE(_jaxtra_cuda, m) {
-  m.doc() = "jaxtra CUDA extension: cuSolver ormqr via XLA FFI";
+  m.doc() = "jaxtra CUDA extension: cuSolver ormqr and cuSparse gpsv via XLA FFI";
 
-  // registrations() — returns {platform: [(name, capsule, api_version)]}
-  // matching jaxlib.gpu_solver.registrations() format and the CPU equivalent
-  // in jaxtra_module.cc.
-  //
-  // "CUDA" is the XLA platform string for CUDA; JAX maps it from the
-  // target_name_prefix "cu" used in _ormqr_cpu_gpu_lowering.
+  // registrations() — cuSolver targets (ormqr).
+  // Returns {platform: [(name, capsule, api_version)]} matching
+  // jaxlib.gpu_solver.registrations() format.
   m.def("registrations", []() {
     nb::dict out;
     nb::list gpu_targets;
@@ -52,6 +50,22 @@ NB_MODULE(_jaxtra_cuda, m) {
     make_entry(JAX_GPU_PREFIX "solver_sytrf_ffi",
                reinterpret_cast<void*>(SytrfFfi));
 #endif  // JAX_GPU_CUDA
+    out["CUDA"] = gpu_targets;
+    return out;
+  });
+
+  // sparse_registrations() — cuSparse targets (pentadiagonal solve).
+  m.def("sparse_registrations", []() {
+    nb::dict out;
+    nb::list gpu_targets;
+    auto make_entry = [&](const char* name, void* sym) {
+      gpu_targets.append(nb::make_tuple(
+          name,
+          nb::capsule(sym, "xla._CUSTOM_CALL_TARGET"),
+          /*api_version=*/1));
+    };
+    make_entry(JAX_GPU_PREFIX "sparse_gpsvInterleaved_ffi",
+               reinterpret_cast<void*>(GpsvFfi));
     out["CUDA"] = gpu_targets;
     return out;
   });

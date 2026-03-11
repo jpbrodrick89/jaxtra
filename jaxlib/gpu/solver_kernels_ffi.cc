@@ -21,6 +21,7 @@ limitations under the License.
 #include "jaxlib/gpu/solver_kernels_ffi.h"
 
 #include <cstdint>
+#include <type_traits>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -39,6 +40,17 @@ namespace jax {
 namespace JAX_GPU_NAMESPACE {
 
 namespace ffi = ::xla::ffi;
+
+// Real ormqr (Sormqr/Dormqr) accepts CUBLAS_OP_T for transpose;
+// complex unmqr (Cunmqr/Zunmqr) requires CUBLAS_OP_C (conjugate transpose).
+template <typename T>
+gpublasOperation_t TransposeOp() {
+  if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+    return GPUBLAS_OP_T;
+  } else {
+    return GPUBLAS_OP_C;
+  }
+}
 
 #define SOLVER_DISPATCH_IMPL(impl, ...)           \
   switch (dataType) {                             \
@@ -69,7 +81,7 @@ ffi::Error OrmqrImpl(int64_t batch, int64_t c_rows, int64_t c_cols,
   FFI_ASSIGN_OR_RETURN(auto lda, MaybeCastNoOverflow<int>(a_rows));
 
   gpublasSideMode_t side = left ? GPUBLAS_SIDE_LEFT : GPUBLAS_SIDE_RIGHT;
-  gpublasOperation_t trans = transpose ? GPUBLAS_OP_C : GPUBLAS_OP_N;
+  gpublasOperation_t trans = transpose ? TransposeOp<T>() : GPUBLAS_OP_N;
 
   FFI_ASSIGN_OR_RETURN(auto handle, SolverHandlePool::Borrow(stream));
   FFI_ASSIGN_OR_RETURN(int lwork,

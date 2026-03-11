@@ -1,4 +1,4 @@
-// nanobind module for jaxtra: registers XLA FFI LAPACK ORMQR kernels.
+// nanobind module for jaxtra: registers XLA FFI LAPACK kernels.
 //
 // Uses nanobind (same as jaxlib) so that initialize() can extract raw LAPACK
 // function pointers from scipy's Cython capsules via nb::capsule::data(),
@@ -13,7 +13,6 @@
 #include "xla/ffi/api/ffi.h"
 
 namespace nb = nanobind;
-namespace ffi = xla::ffi;
 using namespace jaxtra;
 
 // ---------------------------------------------------------------------------
@@ -23,6 +22,13 @@ using namespace jaxtra;
 template <typename Kernel>
 void AssignKernelFn(void* fn) {
   Kernel::fn = reinterpret_cast<typename Kernel::FnType*>(fn);
+}
+
+// AssignKernelFnHe — assigns the hetrf function pointer (fn_he member).
+// Used for complex types only; real types leave fn_he as nullptr.
+template <typename Kernel>
+void AssignKernelFnHe(void* fn) {
+  Kernel::fn_he = reinterpret_cast<typename Kernel::FnType*>(fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +74,34 @@ void AssignKernelFn(void* fn) {
           .Ret<ffi::Buffer<dtype>>())              /* x_out */
 
 // ---------------------------------------------------------------------------
+// Handler macro for pentadiagonal solve (LAPACK gbsv, KL=KU=2).
+// ---------------------------------------------------------------------------
+#define JAXTRA_CPU_DEFINE_GBSV(name, dtype)                      \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
+      name, PentadiagonalSolve<dtype>::Kernel,                    \
+      ffi::Ffi::Bind()                                            \
+          .Arg<ffi::Buffer<dtype>>() /* ds */                     \
+          .Arg<ffi::Buffer<dtype>>() /* dl */                     \
+          .Arg<ffi::Buffer<dtype>>() /* d  */                     \
+          .Arg<ffi::Buffer<dtype>>() /* du */                     \
+          .Arg<ffi::Buffer<dtype>>() /* dw */                     \
+          .Arg<ffi::Buffer<dtype>>() /* b  */                     \
+          .Ret<ffi::Buffer<dtype>>()) /* x (b_out) */
+
+// ---------------------------------------------------------------------------
+// Handler macro for Hermitian pentadiagonal solve (LAPACK pbsv, KD=2).
+// ---------------------------------------------------------------------------
+#define JAXTRA_CPU_DEFINE_PBSV(name, dtype)                      \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
+      name, HermitianPentadiagonalSolve<dtype>::Kernel,            \
+      ffi::Ffi::Bind()                                            \
+          .Arg<ffi::Buffer<dtype>>() /* d  */                     \
+          .Arg<ffi::Buffer<dtype>>() /* du */                     \
+          .Arg<ffi::Buffer<dtype>>() /* dw */                     \
+          .Arg<ffi::Buffer<dtype>>() /* b  */                     \
+          .Ret<ffi::Buffer<dtype>>()) /* x (b_out) */
+
+// ---------------------------------------------------------------------------
 // XLA FFI handler bindings (typed API, api_version=1).
 // Names match JAX PR #35104.
 // ---------------------------------------------------------------------------
@@ -86,19 +120,22 @@ JAXTRA_CPU_DEFINE_SYTRS(lapack_dsytrs_ffi, ffi::DataType::F64);
 JAXTRA_CPU_DEFINE_SYTRS(lapack_csytrs_ffi, ffi::DataType::C64);
 JAXTRA_CPU_DEFINE_SYTRS(lapack_zsytrs_ffi, ffi::DataType::C128);
 
+JAXTRA_CPU_DEFINE_GBSV(lapack_sgbsv_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_GBSV(lapack_dgbsv_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_GBSV(lapack_cgbsv_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_GBSV(lapack_zgbsv_ffi, ffi::DataType::C128);
+
+JAXTRA_CPU_DEFINE_PBSV(lapack_spbsv_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_PBSV(lapack_dpbsv_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_PBSV(lapack_cpbsv_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_PBSV(lapack_zpbsv_ffi, ffi::DataType::C128);
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
-// AssignKernelFnHe — assigns the hetrf function pointer (fn_he member).
-// Used for complex types only; real types leave fn_he as nullptr.
-template <typename Kernel>
-void AssignKernelFnHe(void* fn) {
-  Kernel::fn_he = reinterpret_cast<typename Kernel::FnType*>(fn);
-}
-
 NB_MODULE(_jaxtra, m) {
-  m.doc() = "jaxtra C extension: LAPACK ORMQR, SYTRF/HETRF, SYTRS/HETRS via XLA FFI";
+  m.doc() = "jaxtra C extension: LAPACK ORMQR, SYTRF/HETRF, SYTRS/HETRS, GBSV, PBSV via XLA FFI";
 
   // initialize() — mirrors jaxlib's GetLapackKernelsFromScipy().
   // Imports scipy.linalg.cython_lapack, extracts raw function pointers from
@@ -132,6 +169,16 @@ NB_MODULE(_jaxtra, m) {
     // HETRS — Hermitian solve (complex only; real types leave fn_he as nullptr)
     AssignKernelFnHe<LdlSolve<ffi::DataType::C64>>(lapack_ptr("chetrs"));
     AssignKernelFnHe<LdlSolve<ffi::DataType::C128>>(lapack_ptr("zhetrs"));
+    // GBSV — pentadiagonal solve (banded LU)
+    AssignKernelFn<PentadiagonalSolve<ffi::DataType::F32>>(lapack_ptr("sgbsv"));
+    AssignKernelFn<PentadiagonalSolve<ffi::DataType::F64>>(lapack_ptr("dgbsv"));
+    AssignKernelFn<PentadiagonalSolve<ffi::DataType::C64>>(lapack_ptr("cgbsv"));
+    AssignKernelFn<PentadiagonalSolve<ffi::DataType::C128>>(lapack_ptr("zgbsv"));
+    // PBSV — Hermitian pentadiagonal solve (banded Cholesky)
+    AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::F32>>(lapack_ptr("spbsv"));
+    AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::F64>>(lapack_ptr("dpbsv"));
+    AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C64>>(lapack_ptr("cpbsv"));
+    AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C128>>(lapack_ptr("zpbsv"));
   });
 
   // registrations() — returns {platform: [(name, capsule, api_version)]}
@@ -157,6 +204,14 @@ NB_MODULE(_jaxtra, m) {
     make_entry("lapack_dsytrs_ffi", reinterpret_cast<void*>(lapack_dsytrs_ffi));
     make_entry("lapack_csytrs_ffi", reinterpret_cast<void*>(lapack_csytrs_ffi));
     make_entry("lapack_zsytrs_ffi", reinterpret_cast<void*>(lapack_zsytrs_ffi));
+    make_entry("lapack_sgbsv_ffi",  reinterpret_cast<void*>(lapack_sgbsv_ffi));
+    make_entry("lapack_dgbsv_ffi",  reinterpret_cast<void*>(lapack_dgbsv_ffi));
+    make_entry("lapack_cgbsv_ffi",  reinterpret_cast<void*>(lapack_cgbsv_ffi));
+    make_entry("lapack_zgbsv_ffi",  reinterpret_cast<void*>(lapack_zgbsv_ffi));
+    make_entry("lapack_spbsv_ffi",  reinterpret_cast<void*>(lapack_spbsv_ffi));
+    make_entry("lapack_dpbsv_ffi",  reinterpret_cast<void*>(lapack_dpbsv_ffi));
+    make_entry("lapack_cpbsv_ffi",  reinterpret_cast<void*>(lapack_cpbsv_ffi));
+    make_entry("lapack_zpbsv_ffi",  reinterpret_cast<void*>(lapack_zpbsv_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });

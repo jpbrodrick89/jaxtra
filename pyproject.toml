@@ -15,7 +15,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
-  { name = "jpbrodrick89", email = "jonathan.brodrick@simulation.science" },
+  { name = "Jonathan Brodrick", email = "jonathan.brodrick@simulation.science" },
 ]
 keywords = ["jax", "lapack", "linear-algebra", "xla-ffi", "cuda", "cusolver"]
 classifiers = [
@@ -36,11 +36,9 @@ dependencies = [
 # Runtime CUDA libraries as Python packages (from NVIDIA's pip channel).
 # These are the shared libraries that _jaxtra_cuda.so links against at runtime.
 # The build itself still requires the CUDA development toolkit on the build machine.
-gpu = [
-  "nvidia-cusolver-cu12>=11.0; platform_system=='Linux' and platform_machine=='x86_64'",
-  "nvidia-cuda-runtime-cu12>=12.0; platform_system=='Linux' and platform_machine=='x86_64'",
-]
-test = ["pytest"]
+cuda12 = ["jax[cuda12]"]
+cuda13 = ["jax[cuda13]"]
+dev = ["pytest", "pre-commit", "matplotlib", "pandas"]
 docs = [
   "sphinx>=7.3",
   "sphinx-book-theme>=1.1",
@@ -119,6 +117,7 @@ doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE"]
 dev-dependencies = [
   "scikit-build-core>=0.9",
   "nanobind>=2.0",
+  "cmake>=3.20",
 ]
 
 # ---------------------------------------------------------------------------

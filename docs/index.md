@@ -2,37 +2,47 @@
 
 **JAX extensions for LAPACK routines and GPU-accelerated linear algebra.**
 
-Registers XLA FFI kernels as proper JAX primitives — fully compatible with `jit`, `vmap`, and `grad` — backed by LAPACK (CPU) and cuSOLVER (GPU).
+Registers XLA FFI kernels as proper JAX primitives — fully compatible with `jit`, `vmap`, and `grad` — backed by LAPACK (CPU) and cuSOLVER/cuSPARSE (GPU).
 
-## Quick start
+## Functions
 
-```python
-import jax.numpy as jnp
-import jax.scipy.linalg as jsl
-import jaxtra.scipy.linalg as jsla
+```{toctree}
+:hidden:
 
-# Solve a least-squares problem A @ x ≈ b via QR.
-A = jnp.array([[1., 1.], [1., 2.], [1., 3.], [1., 4.]])
-b = jnp.array([2., 4., 5., 4.])
-
-# qr_multiply decomposes A and applies Qᵀ to b in one step — no Q formed.
-Qtb, R = jsla.qr_multiply(A, b, mode='right')
-x = jsl.solve_triangular(R, Qtb)
+api
+benchmarks_ldl
 ```
+
+| Function                                       | Description                                 |
+| ---------------------------------------------- | ------------------------------------------- |
+| {func}`jaxtra.scipy.linalg.qr_multiply`        | QR decomposition and Q-multiply in one step |
+| {func}`jaxtra.scipy.linalg.ldl`                | LDL factorization (symmetric/Hermitian)     |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solve`  | Pentadiagonal linear solve                  |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solveh` | Hermitian pentadiagonal linear solve        |
+| {func}`jaxtra._src.lax.linalg.ormqr`           | Multiply by Q from a QR factorization       |
 
 ## Installation
 
 ```bash
-pip install jaxtra            # CPU (LAPACK via SciPy at runtime)
-pip install "jaxtra[gpu]"     # + NVIDIA cuSOLVER runtime libs
+pip install jaxtra             # CPU (LAPACK via SciPy at runtime)
+pip install jaxtra[cuda12]     # + CUDA 12 support
+pip install jaxtra[cuda13]     # + CUDA 13 support
 ```
 
-## Modules
+## Quick example
 
-```{toctree}
-:maxdepth: 2
+```python
+import jax
+import jax.numpy as jnp
+import jax.scipy.linalg as jsl
+import jaxtra.scipy.linalg as jslx
 
-api
-benchmarks
-benchmarks_ldl
+# Solve a least-squares problem A @ x ≈ b via QR.
+key_a, key_b = jax.random.split(jax.random.key(0))
+A = jax.random.normal(key_a, (5000, 100))   # tall, skinny matrix
+b = jax.random.normal(key_b, (5000,))
+
+# qr_multiply decomposes A and applies Qᵀ to b in one step — no Q formed.
+Qtb, R = jslx.qr_multiply(A, b, mode='right')
+x = jsl.solve_triangular(R, Qtb)
 ```

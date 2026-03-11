@@ -41,32 +41,34 @@ x = jsl.solve_triangular(R, Qtb)
 
 ### LAPACK routines exposed
 
-| Routine                    | Description                                                                                     | Primitive                      |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------ |
-| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q | `jaxtra._src.lax.linalg.ormqr` |
+| Routine                    | Description                                                                                                                                                          | Primitive                                |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `?ormqr` (`s`/`d`/`c`/`z`) | Multiply a matrix by Q (or Qᵀ/Qᴴ) from a compact Householder QR factorisation without forming Q                                                                      | `jaxtra._src.lax.linalg.ormqr`           |
+| `?gbsv` (`s`/`d`/`c`/`z`)  | Solve a pentadiagonal (banded, KL=KU=2) linear system via banded LU; GPU uses cuSPARSE `gpsvInterleavedBatch`                                                        | `jaxtra.lax.linalg.pentadiagonal_solve`  |
+| `?pbsv` (`s`/`d`/`c`/`z`)  | Solve a Hermitian/symmetric positive-definite pentadiagonal system via banded Cholesky (KD=2); GPU reconstructs lower diags and uses cuSPARSE `gpsvInterleavedBatch` | `jaxtra.lax.linalg.pentadiagonal_solveh` |
 
 ---
 
 ## GPU support
 
-Install with the `[gpu]` extra to pull in the NVIDIA runtime libraries and build the cuSolver extension:
+Install with the `[cuda13]` extra to pull in the NVIDIA runtime libraries and build the cuSolver extension:
 
 ```bash
-pip install jaxtra[gpu]          # pulls nvidia-cusolver-cu12 + builds _jaxtra_cuda.so if CUDA toolkit is present
+pip install jaxtra[cuda13]          # pulls jax[cuda13] + builds _jaxtra_cuda.so if CUDA toolkit is present
 # or with uv:
-uv add jaxtra[gpu]
+uv add jaxtra[cuda13]
 ```
 
 The build auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is compiled when `nvcc`/`CUDAToolkit` is found, skipped silently otherwise. If you need to override:
 
 ```bash
-JAXTRA_CUDA=OFF  pip install jaxtra[gpu]   # force CPU-only even if CUDA is present
-JAXTRA_CUDA=ON   pip install jaxtra[gpu]   # require CUDA; fail if not found
+JAXTRA_CUDA=OFF  pip install jaxtra[cuda13]   # force CPU-only even if CUDA is present
+JAXTRA_CUDA=ON   pip install jaxtra[cuda13]   # require CUDA; fail if not found
 ```
 
 Once `_jaxtra_cuda.so` is present alongside `_jaxtra.so`, `jaxtra` detects and loads it automatically at import time — no code change required.
 
-Requirements: CUDA ≥ 11.x, cuSolver, Abseil (fetched automatically via CMake `FetchContent` if not installed system-wide).
+Requirements: CUDA ≥ 12.0, cuSolver, Abseil (fetched automatically via CMake `FetchContent` if not installed system-wide).
 
 ---
 
@@ -83,3 +85,12 @@ Mirrors `jax.scipy.linalg`.
 The underlying `ormqr` primitive is accessible at `jaxtra._src.lax.linalg.ormqr`
 for users who need to apply Q directly (same convention as reaching into
 `jax._src.lax.linalg` for primitives not yet in the public API).
+
+#### `jaxtra.lax.linalg`
+
+Low-level primitives analogous to `jax.lax.linalg`.
+
+| Symbol                 | Description                                                                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pentadiagonal_solve`  | Solve A x = b for a pentadiagonal matrix A (five diagonals). CPU: LAPACK `gbsv`. GPU: cuSPARSE `gpsvInterleavedBatch`. Supports `jit`, `vmap`, `grad`.                                       |
+| `pentadiagonal_solveh` | Solve A x = b for a Hermitian/symmetric positive-definite pentadiagonal A (three upper diagonals). CPU: LAPACK `pbsv`. GPU: cuSPARSE `gpsvInterleavedBatch`. Supports `jit`, `vmap`, `grad`. |

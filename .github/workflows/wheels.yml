@@ -36,12 +36,12 @@ jobs:
       # ── QEMU for Linux aarch64 cross-compilation ────────────────────────
       - name: Set up QEMU
         if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
 
       # ── Build wheels ─────────────────────────────────────────────────────
-      - uses: pypa/cibuildwheel@v3.3
+      - uses: pypa/cibuildwheel@v3.4
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp311-* cp312-* cp313-* cp314-*"
