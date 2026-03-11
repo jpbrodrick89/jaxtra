@@ -13,14 +13,14 @@ api
 benchmarks_ldl
 ```
 
-| Function                                       | Description                                    |
-| ---------------------------------------------- | ---------------------------------------------- |
-| {func}`jaxtra.scipy.linalg.qr_multiply`        | QR decomposition and Q-multiply in one step    |
-| {func}`jaxtra.lax.linalg.ldl`                  | LDL factorization (symmetric/Hermitian)        |
-| {func}`jaxtra.lax.linalg.ldl_solve`            | Solve from an LDL factorization                |
-| {func}`jaxtra.lax.linalg.pentadiagonal_solve`  | Pentadiagonal linear solve                     |
-| {func}`jaxtra.lax.linalg.pentadiagonal_solveh` | Hermitian pentadiagonal linear solve           |
-| {func}`jaxtra._src.lax.linalg.ormqr`           | Multiply by Q from a QR factorization          |
+| Function                                       | Description                                 |
+| ---------------------------------------------- | ------------------------------------------- |
+| {func}`jaxtra.scipy.linalg.qr_multiply`        | QR decomposition and Q-multiply in one step |
+| {func}`jaxtra.lax.linalg.ldl`                  | LDL factorization (symmetric/Hermitian)     |
+| {func}`jaxtra.lax.linalg.ldl_solve`            | Solve from an LDL factorization             |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solve`  | Pentadiagonal linear solve                  |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solveh` | Hermitian pentadiagonal linear solve        |
+| {func}`jaxtra._src.lax.linalg.ormqr`           | Multiply by Q from a QR factorization       |
 
 ## Installation
 
