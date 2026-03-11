@@ -6,6 +6,7 @@ dist/
 build/
 
 # scikit-build-core / CMake in-tree build artefacts
+_deps/
 CMakeCache.txt
 CMakeFiles/
 CMakeInit.txt
@@ -13,8 +14,14 @@ cmake_install.cmake
 build.ninja
 .ninja_deps
 .ninja_log
+Makefile
 .skbuild-info.json
 .cmake/
+
+# Sphinx autosummary generated stubs and build artifacts
+docs/_autosummary/
+docs/_bench_images/
+docs/_build/
 
 # Compiled extension produced by inplace editable install
 _jaxtra*.so

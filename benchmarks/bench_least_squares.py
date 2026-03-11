@@ -1,19 +1,22 @@
 """
-Benchmark: jaxtra ORMQR vs dense QR vs scipy lstsq (SVD)
-=========================================================
+Benchmark: jaxtra ORMQR vs dense QR vs jax lstsq (SVD)
+=======================================================
 For an overdetermined system A @ x ≈ b:
 
-  jaxtra   : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
-  dense QR : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
-  scipy    : scipy.linalg.lstsq  (SVD-based, NumPy arrays)
+  jaxtra     : geqrf(A) + ormqr(H, taus, b) + solve_triangular  (Q never formed)
+  dense QR   : jnp.linalg.qr(A) + Q.T @ b + solve_triangular    (Q materialised)
+  jax lstsq  : jax.numpy.linalg.lstsq  (SVD-based, JAX arrays)
+  scipy dgels : scipy.linalg.lapack.dgels  (QR, no pivoting, CPU cols only: not 200 or 512)
 
-Results are written to  benchmarks/results/bench_least_squares.csv
-Plots are written to    benchmarks/results/bench_cols{20,50,100}.png
+Results are written to  benchmarks/results/bench_least_squares[_gpu].csv
+Plots are written to    benchmarks/results/bench_cols{20,50,100}[_gpu].png
 
 Usage:
-  python benchmarks/bench_least_squares.py
+  python benchmarks/bench_least_squares.py           # CPU run
+  python benchmarks/bench_least_squares.py --gpu     # GPU run with larger sizes
 """
 
+import argparse
 import csv
 import pathlib
 import time
@@ -28,8 +31,16 @@ from scipy import linalg as scipy_linalg
 
 from jaxtra.scipy.linalg import qr_multiply
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--gpu", action="store_true",
+                    help="GPU mode: also benchmark at 50k and 100k rows, "
+                         "append '_gpu' to output filenames.")
+args = parser.parse_args()
+
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
+
+SUFFIX = "_gpu" if args.gpu else ""
 
 # ---------------------------------------------------------------------------
 # JIT-compiled solvers
@@ -37,23 +48,32 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 @jax.jit
 def _jaxtra_solve(A, b):
-    """Least-squares via ORMQR (Q never materialised)."""
+    """geqrf + ormqr + triangular solve — Q never materialised."""
     Qtb, R = qr_multiply(A, b, mode='right')
     return jsl.solve_triangular(R, Qtb)
 
 
 @jax.jit
 def _dense_qr_solve(A, b):
-    """Least-squares via dense QR (Q explicitly formed)."""
+    """geqrf + orgqr + GEMM + triangular solve — Q materialised."""
     Q, R = jnp.linalg.qr(A)
     Qtb = Q.T @ b
     return jsl.solve_triangular(R, Qtb)
 
 
-def _scipy_svd_solve(A_np, b_np):
-    """Least-squares via scipy.linalg.lstsq (SVD)."""
-    x, _, _, _ = scipy_linalg.lstsq(A_np, b_np)
+@jax.jit
+def _jax_lstsq(A, b):
+    """jax.numpy.linalg.lstsq (SVD-based)."""
+    x, _, _, _ = jnp.linalg.lstsq(A, b)
     return x
+
+
+def _scipy_gels_solve(A_np, b_np):
+    """scipy.linalg.lapack.dgels — QR-based least squares, no pivoting."""
+    _, b1, _ = scipy_linalg.lapack.dgels(A_np, b_np[:, None])
+    return b1[:A_np.shape[1], 0]
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +110,22 @@ def time_numpy_fn(fn, *args, n_warmup=1, n_repeat=5):
 
 COL_COUNTS = [20, 50, 100]
 ROW_SIZES  = [100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+if args.gpu:
+    COL_COUNTS = COL_COUNTS + [200, 512]
+    ROW_SIZES  = ROW_SIZES + [50_000, 100_000, 200_000]
 
-N_WARMUP = 1
-N_REPEAT = 5
+# Columns for which scipy gels (CPU) is too slow / not applicable on GPU
+GPU_ONLY_COLS = {200, 512}
+
+N_WARMUP = 5  if args.gpu else 1
+N_REPEAT = 20 if args.gpu else 5
 RNG = np.random.default_rng(0)
 
 METHODS = [
     ("jaxtra (ORMQR)", "#1f77b4", "o"),
     ("dense QR",       "#ff7f0e", "s"),
-    ("scipy SVD",      "#2ca02c", "^"),
+    ("jax lstsq",      "#2ca02c", "^"),
+    ("scipy dgels",    "#9467bd", "D"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,43 +135,59 @@ METHODS = [
 records = []   # list of dicts written to CSV
 
 for n_cols in COL_COUNTS:
+    run_gels = n_cols not in GPU_ONLY_COLS
     print(f"\nn_cols = {n_cols}")
-    print(f"  {'n_rows':>7}  {'jaxtra (ms)':>12}  {'dense QR (ms)':>14}  "
-          f"{'scipy SVD (ms)':>15}  {'vs QR':>6}  {'vs SVD':>7}")
-    print("  " + "-" * 68)
+    hdr = (f"  {'n_rows':>7}  {'jaxtra (ms)':>12}  {'dense QR (ms)':>14}  "
+           f"{'jax lstsq (ms)':>15}")
+    if run_gels:
+        hdr += f"  {'scipy gels (ms)':>17}"
+    hdr += f"  {'vs QR':>6}  {'vs lstsq':>9}"
+    print(hdr)
+    print("  " + "-" * (78 + (19 if run_gels else 0)))
 
     for n_rows in ROW_SIZES:
+        if n_rows < n_cols:
+            continue
         A_np = RNG.standard_normal((n_rows, n_cols)).astype(np.float64)
         b_np = RNG.standard_normal(n_rows).astype(np.float64)
-        A_jx = jnp.array(A_np)
-        b_jx = jnp.array(b_np)
+        A_jx = jax.block_until_ready(jax.device_put(A_np))
+        b_jx = jax.block_until_ready(jax.device_put(b_np))
 
-        t_jaxtra = time_jax_fn(_jaxtra_solve,   A_jx, b_jx,
+        t_jaxtra = time_jax_fn(_jaxtra_solve, A_jx, b_jx,
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
         t_dense  = time_jax_fn(_dense_qr_solve, A_jx, b_jx,
                                 n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-        t_scipy  = time_numpy_fn(_scipy_svd_solve, A_np, b_np,
-                                  n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+        t_lstsq  = time_jax_fn(_jax_lstsq, A_jx, b_jx,
+                                n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
         records.append({"n_rows": n_rows, "n_cols": n_cols,
                          "method": "jaxtra (ORMQR)", "time_ms": t_jaxtra * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
                          "method": "dense QR",       "time_ms": t_dense  * 1e3})
         records.append({"n_rows": n_rows, "n_cols": n_cols,
-                         "method": "scipy SVD",       "time_ms": t_scipy  * 1e3})
+                         "method": "jax lstsq",      "time_ms": t_lstsq  * 1e3})
 
-        print(f"  {n_rows:>7d}  "
-              f"{t_jaxtra*1e3:12.2f}  "
-              f"{t_dense*1e3:14.2f}  "
-              f"{t_scipy*1e3:15.2f}  "
-              f"{t_dense/t_jaxtra:6.2f}x  "
-              f"{t_scipy/t_jaxtra:6.2f}x")
+        row = (f"  {n_rows:>7d}  "
+               f"{t_jaxtra*1e3:12.2f}  "
+               f"{t_dense*1e3:14.2f}  "
+               f"{t_lstsq*1e3:15.2f}")
+
+        if run_gels:
+            t_gels = time_numpy_fn(_scipy_gels_solve, A_np, b_np,
+                                     n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+            records.append({"n_rows": n_rows, "n_cols": n_cols,
+                             "method": "scipy dgels", "time_ms": t_gels * 1e3})
+            row += f"  {t_gels*1e3:17.2f}"
+
+        row += (f"  {t_dense/t_jaxtra:6.2f}x"
+                f"  {t_lstsq/t_jaxtra:8.2f}x")
+        print(row)
 
 # ---------------------------------------------------------------------------
 # Write CSV
 # ---------------------------------------------------------------------------
 
-csv_path = RESULTS_DIR / "bench_least_squares.csv"
+csv_path = RESULTS_DIR / f"bench_least_squares{SUFFIX}.csv"
 with open(csv_path, "w", newline="") as fh:
     writer = csv.DictWriter(fh, fieldnames=["n_rows", "n_cols", "method", "time_ms"])
     writer.writeheader()
@@ -162,6 +205,8 @@ for n_cols in COL_COUNTS:
         pts = [(r["n_rows"], r["time_ms"])
                for r in records
                if r["n_cols"] == n_cols and r["method"] == label]
+        if not pts:
+            continue
         xs, ys = zip(*sorted(pts))
         ax.plot(xs, ys, label=label, color=color, marker=marker,
                 linewidth=2, markersize=5)
@@ -179,7 +224,7 @@ for n_cols in COL_COUNTS:
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
     fig.tight_layout()
 
-    out = RESULTS_DIR / f"bench_cols{n_cols}.png"
+    out = RESULTS_DIR / f"bench_cols{n_cols}{SUFFIX}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Plot saved to {out}")

@@ -27,6 +27,23 @@ namespace jaxtra {
 namespace ffi = ::xla::ffi;
 
 // ---------------------------------------------------------------------------
+// SplitBatch1D
+// ---------------------------------------------------------------------------
+// Returns (batch_count, n) from an N-D dimension span.
+// Mirrors jaxlib's SplitBatch1D helper.
+using Dims2 = std::tuple<int64_t, int64_t>;
+
+inline ffi::ErrorOr<Dims2> SplitBatch1D(ffi::Span<const int64_t> dims) {
+  if (dims.size() < 1) {
+    return ffi::Unexpected(
+        ffi::Error(ffi::ErrorCode::kInvalidArgument, "expected >= 1-D buffer"));
+  }
+  int64_t batch = 1;
+  for (std::size_t i = 0; i + 1 < dims.size(); ++i) batch *= dims[i];
+  return std::make_tuple(batch, dims[dims.size() - 1]);
+}
+
+// ---------------------------------------------------------------------------
 // SplitBatch2D
 // ---------------------------------------------------------------------------
 // Returns (batch_count, rows, cols) from an N-D dimension span.
