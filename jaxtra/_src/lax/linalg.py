@@ -62,10 +62,11 @@ register_module_custom_calls(gpu_sparse)
 def ldl(
   a: ArrayLike, *, lower: bool = True, hermitian: bool = False
 ) -> tuple[Array, Array]:
-  """LDL factorization (LAPACK sytrf / hetrf).
+  """LDL factorization of a symmetric or Hermitian indefinite matrix.
 
   Computes the Bunch-Kaufman factorization of a symmetric (``hermitian=False``)
-  or Hermitian (``hermitian=True``) indefinite matrix.
+  or Hermitian (``hermitian=True``) indefinite matrix using LAPACK ``?sytrf``
+  (symmetric) or ``?hetrf`` (Hermitian) on CPU, and cuSOLVER ``sytrf`` on GPU.
 
   Args:
     a: Square matrix of shape ``[..., n, n]``.
@@ -82,14 +83,28 @@ def ldl(
     * ``factors`` — packed factorization stored in the same shape and dtype as
       ``a``.  The strict lower (or upper when ``lower=False``) triangle holds
       the unit-diagonal factor L (or U), and the diagonal (plus one
-      sub-/super-diagonal for 2×2 blocks) encodes D.
+      sub-/super-diagonal for 2x2 blocks) encodes D.
     * ``ipiv`` — int32 array of shape ``[..., n]`` with LAPACK's 1-indexed
       Bunch-Kaufman pivot information.
 
   See Also:
-    :func:`jaxtra.scipy.linalg.ldl` for a scipy-compatible interface that
-    returns ``(lu, d, perm)`` directly.
-    :func:`ldl_solve` to solve ``A @ x = b`` given the factorization.
+    :func:`ldl_solve`: Solve ``A @ x = b`` given the factorization.
+    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible interface returning
+      ``(lu, d, perm)`` directly.
+    :func:`jax.scipy.linalg.lu_factor`: Analogous LU factorization.
+    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization
+      (for positive-definite matrices).
+
+  Examples:
+    Factorize a symmetric indefinite matrix:
+
+    >>> import jax.numpy as jnp
+    >>> from jaxtra._src.lax.linalg import ldl, ldl_solve
+    >>> A = jnp.array([[2., 1.], [1., -3.]])
+    >>> factors, ipiv = ldl(A)
+    >>> # Use ldl_solve to solve A @ x = b:
+    >>> b = jnp.array([1., 2.])
+    >>> x = ldl_solve(factors, ipiv, b)
   """
   (a,) = core.standard_insert_pvary(a)
   return ldl_p.bind(a, lower=lower, hermitian=hermitian)
@@ -103,20 +118,66 @@ def ldl_solve(
   lower: bool = True,
   hermitian: bool = False,
 ) -> Array:
-  """Solve ``A @ x = b`` using an LDL factorization from :func:`ldl`.
+  """Solve a linear system using an LDL factorization.
 
-  Uses LAPACK ``?sytrs`` (symmetric) or ``?hetrs`` (Hermitian) on CPU via
-  jaxtra's XLA FFI binding.  JIT- and vmap-compatible.
+  Uses the output of :func:`ldl` to solve the linear system ``A @ x = b``
+  where ``A`` is symmetric (or Hermitian) indefinite.  Backed by LAPACK
+  ``?sytrs`` (symmetric) or ``?hetrs`` (Hermitian) on CPU.  JIT-, vmap-,
+  and batching-compatible.
 
   Args:
     factors: Packed LDL factorization from :func:`ldl`, shape ``[..., n, n]``.
-    ipiv: Pivot indices from LAPACK sytrf/hetrf, shape ``[..., n]`` (int32).
+    ipiv: Pivot indices from :func:`ldl`, shape ``[..., n]`` (int32).
     b: Right-hand side, shape ``[..., n]`` or ``[..., n, nrhs]``.
     lower: Must match the ``lower`` flag passed to :func:`ldl`.
     hermitian: Must match the ``hermitian`` flag passed to :func:`ldl`.
 
   Returns:
-    Solution ``x`` with the same shape as ``b``.
+    Array of shape ``[..., n]`` or ``[..., n, nrhs]`` representing the
+    solution ``x``.
+
+  See Also:
+    :func:`ldl`: Compute the LDL factorization.
+    :func:`jaxtra.scipy.linalg.ldl`: SciPy-compatible LDL interface returning
+      ``(lu, d, perm)``.
+    :func:`jax.scipy.linalg.lu_solve`: Analogous solve from an LU
+      factorization.
+    :func:`jax.scipy.linalg.cho_solve`: Analogous solve from a Cholesky
+      factorization.
+
+  Examples:
+    Solve a symmetric indefinite system ``A @ x = b``:
+
+    >>> import jax.numpy as jnp
+    >>> from jaxtra._src.lax.linalg import ldl, ldl_solve
+    >>> A = jnp.array([[2., 1., 0.],
+    ...                [1., -3., 1.],
+    ...                [0., 1., 4.]])
+    >>> b = jnp.array([1., 2., 3.])
+    >>> factors, ipiv = ldl(A)
+    >>> x = ldl_solve(factors, ipiv, b)
+
+  .. rubric:: Benchmarks
+
+  Full solve (factorization + triangular solve) of symmetric/Hermitian
+  indefinite systems (float64 / complex128, CPU, n = 50 -- 5000) compared
+  against :func:`jax.scipy.linalg.solve` (dense LU).
+
+  **Complex Hermitian** — LDL is consistently faster than LU across all
+  tested sizes, exploiting Hermitian structure via LAPACK ``hetrf`` /
+  ``hetrs``.
+
+  **Real symmetric** — Performance depends on the underlying LAPACK vendor.
+  On Linux (OpenBLAS / MKL), LDL is **1.2 -- 1.7x** faster; on macOS
+  (Accelerate), ``getrf`` is more optimized than ``sytrf`` so LU may be
+  faster for purely real solves.
+
+  .. figure:: /_bench_images/bench_ldl.png
+     :alt: LDL vs LU full solve benchmark
+     :width: 90%
+     :align: center
+
+  See ``benchmarks/bench_ldl.py`` for reproduction.
   """
   factors = jnp.asarray(factors)
   ipiv = jnp.asarray(ipiv)

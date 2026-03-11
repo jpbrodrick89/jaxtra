@@ -293,18 +293,26 @@ def ldl(
       (for Hermitian) or with ``lu.T`` (for symmetric).
 
   See Also:
-    :func:`jaxtra._src.lax.linalg.ldl` for the raw primitive returning
-    ``(factors, ipiv)`` directly (JIT-compatible).
-    :func:`jaxtra._src.lax.linalg.ldl_solve` to solve ``A @ x = b``.
+    :func:`jaxtra.scipy.linalg.ldl_solve`: Solve ``A @ x = b`` using the
+      raw LDL factorization (JIT-compatible).
+    :func:`jaxtra._src.lax.linalg.ldl`: Raw primitive returning
+      ``(factors, ipiv)`` directly (JIT-compatible).
+    :func:`jax.scipy.linalg.lu_factor`: Analogous LU factorization.
+    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization
+      (for positive-definite matrices).
 
   Examples:
-    Solve a symmetric indefinite system ``A @ x = b``:
+    Factorize and solve a symmetric indefinite system ``A @ x = b``:
 
     >>> import jax.numpy as jnp
     >>> import jaxtra.scipy.linalg as jsl
+    >>> from jaxtra._src.lax.linalg import ldl as ldl_prim, ldl_solve
     >>> A = jnp.array([[2., 1.], [1., -3.]])
     >>> lu, d, perm = jsl.ldl(A)
-    >>> # Verify: lu @ d @ lu.T ≈ A[perm][:, perm]
+    >>> # Verify: lu @ d @ lu.T == A[perm][:, perm]
+    >>> # For a JIT-compatible solve, use the primitive:
+    >>> factors, ipiv = ldl_prim(A)
+    >>> x = ldl_solve(factors, ipiv, jnp.array([1., 2.]))
   """
   del overwrite_a, check_finite  # unused
   a = jnp.asarray(a)
