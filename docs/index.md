@@ -12,12 +12,12 @@ Registers XLA FFI kernels as proper JAX primitives — fully compatible with `ji
 api
 ```
 
-| Function | Description |
-|----------|-------------|
-| {func}`jaxtra.scipy.linalg.qr_multiply` | QR decomposition and Q-multiply in one step |
-| {func}`jaxtra.lax.linalg.pentadiagonal_solve` | Pentadiagonal linear solve |
-| {func}`jaxtra.lax.linalg.pentadiagonal_solveh` | Hermitian pentadiagonal linear solve |
-| {func}`jaxtra._src.lax.linalg.ormqr` | Multiply by Q from a QR factorization |
+| Function                                       | Description                                 |
+| ---------------------------------------------- | ------------------------------------------- |
+| {func}`jaxtra.scipy.linalg.qr_multiply`        | QR decomposition and Q-multiply in one step |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solve`  | Pentadiagonal linear solve                  |
+| {func}`jaxtra.lax.linalg.pentadiagonal_solveh` | Hermitian pentadiagonal linear solve        |
+| {func}`jaxtra._src.lax.linalg.ormqr`           | Multiply by Q from a QR factorization       |
 
 ## Installation
 
