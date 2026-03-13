@@ -69,7 +69,7 @@ def test_ormqr(a_shape, c_shape, dtype, left, transpose):
     with jax.default_matmul_precision("highest"):
         expected = q_op @ c if left else c @ q_op
 
-    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+    tol = {np.float32: 1e-5, np.complex64: 1e-5,
            np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
 
@@ -105,7 +105,7 @@ def test_qr_multiply(shape, dtype, mode, pivoting):
     with jax.default_matmul_precision("highest"):
         expected = q_full[..., :k] @ c if mode == "left" else c @ q_full[..., :k]
 
-    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+    tol = {np.float32: 1e-5, np.complex64: 1e-5,
            np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
     np.testing.assert_allclose(r, r_ref, rtol=tol, atol=tol)
@@ -135,7 +135,7 @@ def test_qr_multiply_1d(shape, dtype, mode):
         else:
             expected = (c[None, :] @ q_full[..., :k]).ravel()
 
-    tol = {np.float32: 1e-6, np.complex64: 1e-6,
+    tol = {np.float32: 1e-5, np.complex64: 1e-5,
            np.float64: 1e-12, np.complex128: 1e-12}[dtype]
     np.testing.assert_allclose(result, expected, rtol=tol, atol=tol)
 

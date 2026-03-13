@@ -44,7 +44,8 @@ namespace solver {
       gpublasOperation_t trans, int m, int n, int k) {                         \
     int lwork;                                                                 \
     JAX_RETURN_IF_ERROR(JAX_AS_STATUS(Name##_bufferSize(                       \
-        handle, side, trans, m, n, k, /*A=*/nullptr, /*lda=*/m,                \
+        handle, side, trans, m, n, k, /*A=*/nullptr,                           \
+        /*lda=*/(side == GPUBLAS_SIDE_LEFT ? m : n),                           \
         /*tau=*/nullptr, /*C=*/nullptr, /*ldc=*/m, &lwork)));                 \
     return lwork;                                                              \
   }                                                                            \

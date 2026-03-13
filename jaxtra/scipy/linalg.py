@@ -186,6 +186,10 @@ def qr_multiply(a: ArrayLike, c: ArrayLike, mode: str = 'right',
           f"a has shape {tuple(a.shape)} so Q has {m} rows, "
           f"but c has {c.shape[-1]} columns (expected {m}).")
 
+  batch = jnp.broadcast_shapes(a.shape[:-2], c.shape[:-2])
+  a = jnp.broadcast_to(a, batch + a.shape[-2:])
+  c = jnp.broadcast_to(c, batch + c.shape[-2:])
+
   if pivoting:
     jpvt = jnp.zeros(a.shape[:-2] + (n,), dtype=jnp.int32)
     r, p, taus = geqp3(a, jpvt)

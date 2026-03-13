@@ -59,10 +59,11 @@ ffi::Error OrthogonalQrMultiply<dtype>::Kernel(ffi::Buffer<dtype> a,
   FFI_ASSIGN_OR_RETURN(auto c_cols_v, MaybeCastNoOverflow<int>(c_cols));
   FFI_ASSIGN_OR_RETURN(auto k_v,
                        MaybeCastNoOverflow<int>(tau.dimensions().back()));
-  // LDA is the leading dimension of A in Fortran layout:
-  //   left=true:  A is a_rows×k, LDA = a_rows
-  //   left=false: A is c_cols×k, LDA = c_cols
-  int lda_v = left ? static_cast<int>(a_rows) : c_cols_v;
+  // LDA is the leading dimension of A: m (= a_rows = c_rows) when left,
+  // n (= c_cols) when right. The shape rule guarantees a_rows equals the
+  // correct value in both cases, but we compute it explicitly for clarity.
+  FFI_ASSIGN_OR_RETURN(auto lda_v,
+                       MaybeCastNoOverflow<int>(left ? a_rows : c_cols));
 
   char side_v = left ? 'L' : 'R';
   char trans_v;
