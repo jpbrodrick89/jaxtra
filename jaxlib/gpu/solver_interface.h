@@ -266,6 +266,21 @@ JAX_GPU_SOLVER_EXPAND_DEFINITION(absl::StatusOr<int>, SytrdBufferSize);
 JAX_GPU_SOLVER_EXPAND_DEFINITION(absl::Status, Sytrd);
 #undef JAX_GPU_SOLVER_Sytrd_ARGS
 
+// Symmetric/complex-symmetric indefinite factorization: sytrf
+// Note: cuSolver provides Ssytrf, Dsytrf, Csytrf, Zsytrf (all four dtypes).
+// The buffer-size query takes the matrix pointer (unlike most other routines).
+
+#define JAX_GPU_SOLVER_SytrfBufferSize_ARGS(Type, ...) \
+  gpusolverDnHandle_t handle, int n, Type *a, int lda
+JAX_GPU_SOLVER_EXPAND_DEFINITION(absl::StatusOr<int>, SytrfBufferSize);
+#undef JAX_GPU_SOLVER_SytrfBufferSize_ARGS
+
+#define JAX_GPU_SOLVER_Sytrf_ARGS(Type, ...) \
+  gpusolverDnHandle_t handle, gpusolverFillMode_t uplo, int n, Type *a,        \
+      int lda, int *ipiv, Type *work, int lwork, int *info
+JAX_GPU_SOLVER_EXPAND_DEFINITION(absl::Status, Sytrf);
+#undef JAX_GPU_SOLVER_Sytrf_ARGS
+
 #undef JAX_GPU_SOLVER_EXPAND_DEFINITION
 
 }  // namespace solver

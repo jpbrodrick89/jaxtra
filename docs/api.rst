@@ -14,6 +14,8 @@ primitives in :mod:`jaxtra.lax.linalg`.
    :nosignatures:
 
    qr_multiply
+   ldl
+   ldl_solve
 
 ``jaxtra.lax.linalg``
 ---------------------
@@ -26,6 +28,8 @@ primitives in :mod:`jaxtra.lax.linalg`.
 .. autosummary::
    :toctree: _autosummary
 
+   ldl
+   ldl_solve
    pentadiagonal_solve
    pentadiagonal_solveh
 
