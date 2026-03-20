@@ -49,6 +49,8 @@ NB_MODULE(_jaxtra_cuda, m) {
 #ifdef JAX_GPU_CUDA
     make_entry(JAX_GPU_PREFIX "solver_sytrf_ffi",
                reinterpret_cast<void*>(SytrfFfi));
+    make_entry(JAX_GPU_PREFIX "_ldl_ipiv_to_permutation",
+               reinterpret_cast<void*>(LdlIpivToPermutationFfi));
 #endif  // JAX_GPU_CUDA
     out["CUDA"] = gpu_targets;
     return out;

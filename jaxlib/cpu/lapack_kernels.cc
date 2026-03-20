@@ -358,6 +358,26 @@ ffi::Error LdlDecomposition<dtype>::Kernel(
 }
 
 // ---------------------------------------------------------------------------
+// KernelSy / KernelHe — thin wrappers used by the separate sytrf_ffi and
+// hetrf_ffi FFI targets so each handler only binds the attributes it needs.
+// ---------------------------------------------------------------------------
+template <ffi::DataType dtype>
+ffi::Error LdlDecomposition<dtype>::KernelSy(
+    ffi::Buffer<dtype> a, bool lower,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  return Kernel(a, lower, /*hermitian=*/false, a_out, ipiv_out);
+}
+
+template <ffi::DataType dtype>
+ffi::Error LdlDecomposition<dtype>::KernelHe(
+    ffi::Buffer<dtype> a, bool lower,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  return Kernel(a, lower, /*hermitian=*/true, a_out, ipiv_out);
+}
+
+// ---------------------------------------------------------------------------
 // Explicit instantiations — LdlDecomposition
 // ---------------------------------------------------------------------------
 template struct LdlDecomposition<ffi::DataType::F32>;
@@ -365,71 +385,5 @@ template struct LdlDecomposition<ffi::DataType::F64>;
 template struct LdlDecomposition<ffi::DataType::C64>;
 template struct LdlDecomposition<ffi::DataType::C128>;
 
-// ===========================================================================
-// LdlSolve  (sytrs / hetrs)
-// ===========================================================================
-
-// ---------------------------------------------------------------------------
-// Kernel
-// ---------------------------------------------------------------------------
-template <ffi::DataType dtype>
-ffi::Error LdlSolve<dtype>::Kernel(
-    ffi::Buffer<dtype> factors, ffi::Buffer<ffi::DataType::S32> ipiv,
-    ffi::Buffer<dtype> b, bool lower, bool hermitian,
-    ffi::ResultBuffer<dtype> x_out) {
-  // Unpack batch / matrix dimensions from factors (shape [..., n, n]).
-  auto dims_result = SplitBatch2D(factors.dimensions());
-  if (dims_result.has_error()) return std::move(dims_result.error());
-  auto [batch_count, n_rows, n_cols] = *dims_result;
-
-  if (n_rows != n_cols) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      "LDL solve requires a square factors matrix");
-  }
-  FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n_rows));
-
-  // b has shape [..., n, nrhs].  nrhs is the last dimension.
-  auto b_dims = b.dimensions();
-  int64_t nrhs_64 = b_dims.back();
-  FFI_ASSIGN_OR_RETURN(auto nrhs_v, MaybeCastNoOverflow<int>(nrhs_64));
-
-  char uplo = lower ? 'L' : 'U';
-  auto* fn_to_use = (hermitian && fn_he != nullptr) ? fn_he : fn;
-
-  // Copy b → x_out so that sytrs can solve in-place.
-  CopyIfDiffBuffer(b, x_out);
-
-  auto* factors_data = factors.typed_data();
-  // ipiv in LAPACK is int (Fortran INTEGER); our buffer is int32_t.
-  // On all supported platforms int == int32_t, so this cast is safe.
-  auto* ipiv_data = reinterpret_cast<int*>(ipiv.typed_data());
-  auto* x_data = x_out->typed_data();
-
-  int info = 0;  // ignored; matches jaxlib's behaviour
-
-  const int64_t factors_step = n_rows * n_cols;
-  const int64_t ipiv_step = n_rows;
-  const int64_t b_step = n_rows * nrhs_64;
-
-  for (int64_t i = 0; i < batch_count; ++i) {
-    fn_to_use(&uplo, &n_v, &nrhs_v,
-              const_cast<ValueType*>(factors_data), &n_v,
-              ipiv_data,
-              x_data, &n_v,
-              &info);
-    factors_data += factors_step;
-    ipiv_data += static_cast<int>(ipiv_step);
-    x_data += b_step;
-  }
-  return ffi::Error::Success();
-}
-
-// ---------------------------------------------------------------------------
-// Explicit instantiations — LdlSolve
-// ---------------------------------------------------------------------------
-template struct LdlSolve<ffi::DataType::F32>;
-template struct LdlSolve<ffi::DataType::F64>;
-template struct LdlSolve<ffi::DataType::C64>;
-template struct LdlSolve<ffi::DataType::C128>;
 
 }  // namespace jaxtra

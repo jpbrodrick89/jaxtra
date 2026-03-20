@@ -232,6 +232,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(SytrfFfi, SytrfDispatch,
                                   .Ret<ffi::AnyBuffer>()  // a_out
                                   .Ret<ffi::AnyBuffer>()  // ipiv_out
 );
+
 #endif  // JAX_GPU_CUDA
 
 }  // namespace JAX_GPU_NAMESPACE

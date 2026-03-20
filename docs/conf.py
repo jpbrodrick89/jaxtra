@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(".."))
 # _load_extension() in _core.py checks sys.modules first, so pre-populating
 # it here is enough to short-circuit the file search.
 # ---------------------------------------------------------------------------
-for _mod in ("jaxtra._jaxtra", "jaxtra._jaxtra_cuda"):
+for _mod in ("jaxtra._jaxtra", "jaxtra._jaxtra_cuda", "jaxtra._jaxtra_hybrid"):
     _stub = types.ModuleType(_mod)
     _stub.initialize = lambda: None
     _stub.registrations = lambda: {}

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Literal, overload
 
-import numpy as np
 import jax.numpy as jnp
 
 from jax._src.numpy.util import promote_dtypes_inexact
@@ -21,7 +20,6 @@ from jaxtra._src.lax.linalg import (
   ormqr,
   ldl as _ldl_primitive,
   ldl_solve,
-  _reconstruct_ldl_numpy,
 )
 
 __all__ = ["qr_multiply", "ldl", "ldl_solve"]
@@ -293,23 +291,27 @@ def ldl(
       (for Hermitian) or with ``lu.T`` (for symmetric).
 
   See Also:
-    :func:`jaxtra.scipy.linalg.ldl_solve`: Solve ``A @ x = b`` using the raw LDL factorization (JIT-compatible).
-    :func:`jaxtra._src.lax.linalg.ldl`: Raw primitive returning ``(factors, ipiv)`` directly (JIT-compatible).
+    :func:`jaxtra.scipy.linalg.ldl_solve`: Solve ``A @ x = b`` directly from the scipy-style ``(lu, d, perm)`` output.
+    :func:`jaxtra.lax.linalg.ldl`: Low-level primitive returning ``(factors, ipiv, perm)`` for use with :func:`jaxtra.lax.linalg.ldl_solve`.
     :func:`jax.scipy.linalg.lu_factor`: Analogous LU factorization.
-    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization (for positive-definite matrices).
+    :func:`jax.scipy.linalg.cho_factor`: Analogous Cholesky factorization (positive-definite only).
 
   Examples:
-    Factorize and solve a symmetric indefinite system ``A @ x = b``:
+    Factorize a symmetric indefinite matrix and inspect the factors:
 
     >>> import jax.numpy as jnp
     >>> import jaxtra.scipy.linalg as jsl
-    >>> from jaxtra._src.lax.linalg import ldl as ldl_prim, ldl_solve
     >>> A = jnp.array([[2., 1.], [1., -3.]])
     >>> lu, d, perm = jsl.ldl(A)
-    >>> # Verify: lu @ d @ lu.T == A[perm][:, perm]
-    >>> # For a JIT-compatible solve, use the primitive:
-    >>> factors, ipiv = ldl_prim(A)
-    >>> x = ldl_solve(factors, ipiv, jnp.array([1., 2.]))
+    >>> # Verify: lu @ d @ lu.T ≈ A[perm][:, perm]
+    >>> jnp.allclose(lu @ d @ lu.T, A[jnp.ix_(perm, perm)], atol=1e-5)
+    Array(True, dtype=bool)
+
+    For a JIT-compatible factorize-then-solve workflow, use the primitive:
+
+    >>> from jaxtra.lax.linalg import ldl, ldl_solve
+    >>> factors, ipiv, perm2 = ldl(A)
+    >>> x = ldl_solve(factors, ipiv, perm2, jnp.array([1., 2.]))
   """
   del overwrite_a, check_finite  # unused
   a = jnp.asarray(a)
@@ -323,37 +325,44 @@ def ldl(
   if a.ndim < 2 or a.shape[-1] != a.shape[-2]:
     raise ValueError(f"ldl requires a square matrix, got shape {a.shape}")
 
-  # Call the primitive (JIT-compatible).
-  factors, ipiv = _ldl_primitive(a, lower=lower, hermitian=hermitian)
+  # factors is already factors_untangled: L_correct in its strict triangular
+  # part, D on the diagonal and ±1 off-diagonal (for 2×2 blocks).
+  factors, ipiv, perm = _ldl_primitive(a, lower=lower, hermitian=hermitian)
 
-  # Reconstruct (lu, d, perm) using numpy (not JIT-traceable, like scipy).
-  factors_np = np.array(factors)
-  ipiv_np = np.array(ipiv)
-
-  batch_shape = a.shape[:-2]
   n = a.shape[-1]
+  rows = jnp.arange(n - 1)
 
-  if batch_shape:
-    factors_flat = factors_np.reshape(-1, n, n)
-    ipiv_flat = ipiv_np.reshape(-1, n)
+  # Identify 2×2 D blocks from ipiv.
+  is_neg = ipiv < 0
+  pad = jnp.zeros((*is_neg.shape[:-1], 1), dtype=bool)
+  is_2x2 = is_neg & jnp.concatenate([is_neg[..., 1:], pad], axis=-1)  # [..., n]
 
-    lu_list, d_list, perm_list = [], [], []
-    for i in range(factors_flat.shape[0]):
-      lu_i, d_i, perm_i = _reconstruct_ldl_numpy(
-        factors_flat[i], ipiv_flat[i], lower=lower, hermitian=hermitian
-      )
-      lu_list.append(lu_i)
-      d_list.append(d_i)
-      perm_list.append(perm_i)
+  # Off-diagonal of factors at the D storage position (subdiag for lower, superdiag for upper).
+  offset = -1 if lower else +1
+  off = jnp.diagonal(factors, offset=offset, axis1=-2, axis2=-1)  # [..., n-1]
 
-    import numpy as _np
+  # Partition off into L multipliers (1×1 blocks) and D entries (2×2 blocks).
+  is_2x2_off = is_2x2[..., :-1]  # True where off[k] is a 2×2 D entry
+  L_off = jnp.where(is_2x2_off, 0, off)   # L multiplier at ±1 off-diagonal
+  d_off = jnp.where(is_2x2_off, off, 0)   # D entry at ±1 off-diagonal
 
-    lu_np = _np.stack(lu_list).reshape(batch_shape + (n, n))
-    d_np = _np.stack(d_list).reshape(batch_shape + (n, n))
-    perm_np = _np.stack(perm_list).reshape(batch_shape + (n,))
+  # Build lu: unit triangular factor.
+  if lower:
+    lu = jnp.tril(factors, k=-2)
+    lu = lu.at[..., rows + 1, rows].set(L_off)
   else:
-    lu_np, d_np, perm_np = _reconstruct_ldl_numpy(
-      factors_np, ipiv_np, lower=lower, hermitian=hermitian
-    )
+    lu = jnp.triu(factors, k=+2)
+    lu = lu.at[..., rows, rows + 1].set(L_off)
+  lu = lu + jnp.eye(n, dtype=factors.dtype)
 
-  return jnp.array(lu_np), jnp.array(d_np), jnp.array(perm_np, dtype=jnp.int32)
+  # Build d: block-diagonal D matrix (diagonal + 2×2 off-diagonals).
+  # d_off[k] lives at (k+1,k) for lower=True, (k,k+1) for lower=False.
+  d = factors * jnp.eye(n, dtype=factors.dtype)
+  if lower:
+    d = d.at[..., rows + 1, rows].set(d_off)
+    d = d.at[..., rows, rows + 1].set(jnp.conj(d_off) if hermitian else d_off)
+  else:
+    d = d.at[..., rows, rows + 1].set(d_off)
+    d = d.at[..., rows + 1, rows].set(jnp.conj(d_off) if hermitian else d_off)
+
+  return lu, d, perm

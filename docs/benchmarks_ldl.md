@@ -4,20 +4,20 @@ Comparison of jaxtra's LDL (Bunch-Kaufman) factorisation against LU for a
 full solve (factorization + triangular solve) of a single 1-D right-hand side,
 on square matrices (float64 and complex128, CPU, n = 50 – 5000):
 
-| Method             | Implementation                                                              |
-| ------------------ | --------------------------------------------------------------------------- |
+| Method             | Implementation                                                            |
+| ------------------ | ------------------------------------------------------------------------- |
 | **LDL full solve** | `jaxtra._src.lax.linalg.ldl` (JIT) + `ldl_solve` via LAPACK `sytrs` (JIT) |
-| **LU full solve**  | `jax.scipy.linalg.solve` — fully JIT-compiled LAPACK `dgetrf`/`dtrsv`      |
+| **LU full solve**  | `jax.scipy.linalg.solve` — fully JIT-compiled LAPACK `dgetrf`/`dtrsv`     |
 
 Both the factorization and the triangular solve are fused into a single XLA
 computation (one `@jax.jit` scope), so there is no Python round-trip overhead
-between them.  All timings use `jax.block_until_ready` with one warmup run
+between them. All timings use `jax.block_until_ready` with one warmup run
 followed by five timed repetitions; the reported value is the median.
 Raw results are in `benchmarks/results/bench_ldl.csv`.
 
 **Note on D storage**: D is returned as a full `(n, n)` block-diagonal matrix,
-not a 1-D array.  Bunch-Kaufman pivoting can produce 2×2 off-diagonal blocks in
-D, so a 1-D diagonal representation is insufficient.  This matches scipy's
+not a 1-D array. Bunch-Kaufman pivoting can produce 2×2 off-diagonal blocks in
+D, so a 1-D diagonal representation is insufficient. This matches scipy's
 behaviour.
 
 ## Results (Linux / OpenBLAS, GitHub Actions)
@@ -30,7 +30,7 @@ behaviour.
 
 ### Real symmetric indefinite (f64)
 
-| n    | LDL factorization (ms) | LDL full solve (ms) | LU full solve (ms) | LDL / LU |
+| n    | LDL factorization (ms) | LDL full solve (ms) | LU full solve (ms) | LDL / LU  |
 | ---- | ---------------------- | ------------------- | ------------------ | --------- |
 | 50   | 0.07                   | 0.04                | 0.09               | **2.27×** |
 | 100  | 0.09                   | 0.08                | 0.13               | **1.52×** |
@@ -42,7 +42,7 @@ behaviour.
 
 ### Complex Hermitian indefinite (c128)
 
-| n    | LDL factorization (ms) | LDL full solve (ms) | LU full solve (ms) | LDL / LU |
+| n    | LDL factorization (ms) | LDL full solve (ms) | LU full solve (ms) | LDL / LU  |
 | ---- | ---------------------- | ------------------- | ------------------ | --------- |
 | 50   | 0.06                   | 0.07                | 0.09               | **1.41×** |
 | 100  | 0.12                   | 0.13                | 0.27               | **2.16×** |
@@ -64,16 +64,16 @@ of symmetric factorization becoming more pronounced at large n.
 ### Platform note — macOS vs Linux
 
 On macOS (Accelerate framework), `getrf` is more aggressively hand-tuned than
-`sytrf`, so LU can be faster for real symmetric solves at medium sizes.  On
+`sytrf`, so LU can be faster for real symmetric solves at medium sizes. On
 Linux (OpenBLAS, as measured here on GitHub Actions), `getrf` is not as
-optimised relative to `sytrf`, so LDL shows broader speedups.  The speedup on
+optimised relative to `sytrf`, so LDL shows broader speedups. The speedup on
 GHA is mainly driven by **`getrf` being slower on OpenBLAS** rather than
 `sytrf` being dramatically faster — `sytrf` at n = 2000 is ~105 ms on GHA vs
 ~47 ms on Mac (2.2× difference), while `getrf` at n = 2000 is ~123 ms on GHA
 vs ~22 ms on Mac (5.6× difference).
 
 > **Warning**: on some platforms (e.g. macOS with Accelerate), `sytrf` may be
-> slower than `getrf` for purely real symmetric matrices.  Benchmark both paths
+> slower than `getrf` for purely real symmetric matrices. Benchmark both paths
 > for your hardware before optimising.
 
 ### Qualitative take-away

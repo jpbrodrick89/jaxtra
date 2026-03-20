@@ -6,19 +6,18 @@ of a single 1-D right-hand side vector, comparing:
   - LDL (sytrf) via jaxtra  — for symmetric/Hermitian indefinite matrices
   - LU  (getrf) via jax.scipy.linalg.solve  — always applicable
 
-Both LDL factorization and the LDL triangular solve (via LAPACK sytrs/hetrs)
-are JIT-compiled JAX primitives.  jax.scipy.linalg.solve is also fully
-JIT-compiled, so timings are apples-to-apples end-to-end solve cost.
+Columns reported:
+  1. sytrf (ms)        — raw LAPACK/cuSolver sytrf/hetrf call only (ldl_raw)
+  2. ldl factor (ms)   — ldl() = sytrf + BK untangle scan
+  3. ldl full (ms)     — ldl() + ldl_solve() end-to-end
+  4. LU full (ms)      — jax.scipy.linalg.solve for reference
+  5. ldl_vs_lu         — LU time / LDL full time (> 1 means LDL is faster)
 
 Matrix sizes: 50 to 5000.  Two series:
   1. Real symmetric indefinite (f64)
   2. Complex Hermitian indefinite (c128)
 
-Note on D storage: jaxtra returns D as a full (n, n) block-diagonal matrix,
-NOT a 1-D array.  Bunch-Kaufman pivoting can produce 2×2 blocks in D, so a
-1-D representation is insufficient.
-
-Results are written to benchmarks/results/bench_ldl.csv and companion PNGs.
+Results are written to benchmarks/results/bench_ldl.csv and a companion PNG.
 
 Usage:
   python benchmarks/bench_ldl.py
@@ -38,7 +37,7 @@ from jax._src.lax.linalg import lu as jax_lu
 
 jax.config.update("jax_enable_x64", True)
 
-from jaxtra._src.lax.linalg import ldl as ldl_primitive, ldl_solve
+from jaxtra._src.lax.linalg import ldl as ldl_primitive, ldl_solve, ldl_raw
 
 RESULTS_DIR = Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -54,21 +53,27 @@ RNG = np.random.default_rng(42)
 
 
 @jax.jit
+def _sytrf_sym(a):
+  """Raw sytrf call only — real symmetric."""
+  return ldl_raw(a, lower=True, hermitian=False)
+
+
+@jax.jit
+def _sytrf_herm(a):
+  """Raw hetrf/sytrf call only — complex Hermitian."""
+  return ldl_raw(a, lower=True, hermitian=True)
+
+
+@jax.jit
 def _ldl_sym(a):
-  """LDL factorisation only — real symmetric."""
+  """LDL factorisation (sytrf + BK untangle) — real symmetric."""
   return ldl_primitive(a, lower=True, hermitian=False)
 
 
 @jax.jit
 def _ldl_herm(a):
-  """LDL factorisation only — complex Hermitian."""
+  """LDL factorisation (sytrf + BK untangle) — complex Hermitian."""
   return ldl_primitive(a, lower=True, hermitian=True)
-
-
-@jax.jit
-def _lu(a):
-  """LU factorisation (factorization only, for reference)."""
-  return jax_lu(a)
 
 
 @jax.jit
@@ -93,15 +98,15 @@ def _lu_solve_cplx(a, b):
 @jax.jit
 def _ldl_full_sym(a, b):
   """LDL full solve — real symmetric (factorization + solve, single JIT)."""
-  factors, ipiv = ldl_primitive(a, lower=True, hermitian=False)
-  return ldl_solve(factors, ipiv, b, lower=True, hermitian=False)
+  factors, ipiv, perm = ldl_primitive(a, lower=True, hermitian=False)
+  return ldl_solve(factors, ipiv, perm, b, lower=True, hermitian=False)
 
 
 @jax.jit
 def _ldl_full_herm(a, b):
   """LDL full solve — complex Hermitian (factorization + solve, single JIT)."""
-  factors, ipiv = ldl_primitive(a, lower=True, hermitian=True)
-  return ldl_solve(factors, ipiv, b, lower=True, hermitian=True)
+  factors, ipiv, perm = ldl_primitive(a, lower=True, hermitian=True)
+  return ldl_solve(factors, ipiv, perm, b, lower=True, hermitian=True)
 
 
 # ---------------------------------------------------------------------------
@@ -156,32 +161,36 @@ def _run_series(
   label: str,
   dtype,
   matrix_fn,
+  sytrf_fn,
+  ldl_factor_fn,
   ldl_full_fn,
   lu_solve_fn,
 ) -> list[dict]:
   rows = []
   print(
-    f"  {'n':>6}  {'LDL factoriz (ms)':>18}  {'LDL full solve (ms)':>20}  "
-    f"{'LU full solve (ms)':>19}  {'LDL vs LU':>10}"
+    f"  {'n':>6}  {'sytrf (ms)':>10}  {'factor (ms)':>11}  "
+    f"{'full (ms)':>10}  {'LU (ms)':>8}  {'ldl_vs_lu':>9}"
   )
-  print("  " + "-" * 80)
+  print("  " + "-" * 75)
   for n in SIZES:
     a = matrix_fn(n, dtype)
     b = jnp.ones(n, dtype=dtype)
 
-    t_ldl_fact = time_jax_fn(_ldl_sym if "sym" in label else _ldl_herm, a)
+    t_sytrf = time_jax_fn(sytrf_fn, a)
+    t_ldl_fact = time_jax_fn(ldl_factor_fn, a)
     t_ldl_full = time_jax_fn(ldl_full_fn, a, b)
     t_lu_full = time_jax_fn(lu_solve_fn, a, b)
 
     speedup = t_lu_full / t_ldl_full if t_ldl_full > 0 else float("nan")
     print(
-      f"  {n:>6d}  {t_ldl_fact * 1e3:18.2f}  {t_ldl_full * 1e3:20.2f}  "
-      f"{t_lu_full * 1e3:19.2f}  {speedup:9.2f}x"
+      f"  {n:>6d}  {t_sytrf * 1e3:10.2f}  {t_ldl_fact * 1e3:11.2f}  "
+      f"{t_ldl_full * 1e3:10.2f}  {t_lu_full * 1e3:8.2f}  {speedup:9.2f}x"
     )
 
     rows.append({
       "series": label,
       "n": n,
+      "sytrf_ms": t_sytrf * 1e3,
       "ldl_factoriz_ms": t_ldl_fact * 1e3,
       "ldl_solve_ms": t_ldl_full * 1e3,
       "lu_solve_ms": t_lu_full * 1e3,
@@ -198,6 +207,8 @@ def main():
     "sym_f64",
     np.float64,
     _sym_indef,
+    _sytrf_sym,
+    _ldl_sym,
     _ldl_full_sym,
     _lu_solve_real,
   )
@@ -207,6 +218,8 @@ def main():
     "herm_c128",
     np.complex128,
     _herm_indef,
+    _sytrf_herm,
+    _ldl_herm,
     _ldl_full_herm,
     _lu_solve_cplx,
   )
@@ -216,6 +229,7 @@ def main():
   fieldnames = [
     "series",
     "n",
+    "sytrf_ms",
     "ldl_factoriz_ms",
     "ldl_solve_ms",
     "lu_solve_ms",
@@ -244,38 +258,47 @@ def _plot(rows: list[dict]):
 
     ax.loglog(
       ns,
-      [r["ldl_solve_ms"] for r in data],
+      [r["sytrf_ms"] for r in data],
+      "^:",
+      label="sytrf only (raw LAPACK)",
+      linewidth=1.5,
+      markersize=4,
+      alpha=0.7,
+    )
+    ax.loglog(
+      ns,
+      [r["ldl_factoriz_ms"] for r in data],
       "o-",
-      label="LDL full solve (sytrf + trsv)",
+      label="ldl factor (sytrf + untangle)",
+      linewidth=2,
+      markersize=5,
+    )
+    ax.loglog(
+      ns,
+      [r["ldl_solve_ms"] for r in data],
+      "s--",
+      label="ldl full solve",
       linewidth=2,
       markersize=5,
     )
     ax.loglog(
       ns,
       [r["lu_solve_ms"] for r in data],
-      "s--",
-      label="LU full solve (scipy.linalg.solve)",
-      linewidth=2,
-      markersize=5,
-    )
-    ax.loglog(
-      ns,
-      [r["ldl_factoriz_ms"] for r in data],
-      "^:",
-      label="LDL factorization only",
+      "D:",
+      label="LU full solve (scipy)",
       linewidth=1.5,
       markersize=4,
-      alpha=0.6,
+      alpha=0.7,
     )
 
     ax.set_xlabel("Matrix size n", fontsize=12)
     ax.set_ylabel("Time (ms)", fontsize=12)
     ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=9)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
 
   fig.suptitle(
-    "Full solve = factorization + triangular solve, 1-D rhs", fontsize=11
+    "LDL benchmark: sytrf only vs factor (w/ untangle) vs full solve", fontsize=11
   )
   fig.tight_layout()
   png_path = RESULTS_DIR / "bench_ldl.png"
