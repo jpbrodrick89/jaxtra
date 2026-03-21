@@ -285,4 +285,106 @@ template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ===========================================================================
+// LdlDecomposition  (sytrf / hetrf)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// GetWorkspaceSize
+// ---------------------------------------------------------------------------
+template <ffi::DataType dtype>
+int64_t LdlDecomposition<dtype>::GetWorkspaceSize(char uplo, int n,
+                                                   bool hermitian) {
+  ValueType optimal_size = {};
+  int info = 0;
+  int workspace_query = -1;
+  auto* fn_to_use = (hermitian && fn_he != nullptr) ? fn_he : fn;
+  // LAPACK workspace query: pass nullptr for a and ipiv, lwork=-1.
+  fn_to_use(&uplo, &n, /*a=*/nullptr, &n, /*ipiv=*/nullptr,
+            &optimal_size, &workspace_query, &info);
+  return info == 0 ? static_cast<int64_t>(std::real(optimal_size)) : -1;
+}
+
+// ---------------------------------------------------------------------------
+// Kernel
+// ---------------------------------------------------------------------------
+template <ffi::DataType dtype>
+ffi::Error LdlDecomposition<dtype>::Kernel(
+    ffi::Buffer<dtype> a, bool lower, bool hermitian,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  // Unpack batch / matrix dimensions.
+  auto dims_result = SplitBatch2D(a.dimensions());
+  if (dims_result.has_error()) return std::move(dims_result.error());
+  auto [batch_count, n_rows, n_cols] = *dims_result;
+
+  if (n_rows != n_cols) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                      "LDL decomposition requires a square matrix");
+  }
+  FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n_rows));
+
+  char uplo = lower ? 'L' : 'U';
+  auto* fn_to_use = (hermitian && fn_he != nullptr) ? fn_he : fn;
+
+  // Workspace query (same for all batch elements — shape is identical).
+  int64_t work_size = GetWorkspaceSize(uplo, n_v, hermitian);
+  if (work_size < 0) {
+    return ffi::Error(ffi::ErrorCode::kInternal,
+                      "LAPACK sytrf/hetrf workspace query failed");
+  }
+  auto work_size_v = static_cast<int>(std::max(work_size, int64_t{1}));
+  std::vector<ValueType> work(work_size_v);
+
+  // Copy a → a_out only when XLA did not alias the buffers.
+  CopyIfDiffBuffer(a, a_out);
+
+  auto* a_data    = a_out->typed_data();
+  // ipiv in LAPACK is int (Fortran INTEGER); our output buffer is int32_t.
+  // On all supported platforms int == int32_t, so this cast is safe.
+  auto* ipiv_data = reinterpret_cast<int*>(ipiv_out->typed_data());
+
+  int info = 0;  // ignored; matches jaxlib's behaviour
+
+  const int64_t a_step    = n_rows * n_cols;
+  const int64_t ipiv_step = n_rows;
+
+  for (int64_t i = 0; i < batch_count; ++i) {
+    fn_to_use(&uplo, &n_v, a_data, &n_v, ipiv_data,
+              work.data(), &work_size_v, &info);
+    a_data    += a_step;
+    ipiv_data += static_cast<int>(ipiv_step);
+  }
+  return ffi::Error::Success();
+}
+
+// ---------------------------------------------------------------------------
+// KernelSy / KernelHe — thin wrappers used by the separate sytrf_ffi and
+// hetrf_ffi FFI targets so each handler only binds the attributes it needs.
+// ---------------------------------------------------------------------------
+template <ffi::DataType dtype>
+ffi::Error LdlDecomposition<dtype>::KernelSy(
+    ffi::Buffer<dtype> a, bool lower,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  return Kernel(a, lower, /*hermitian=*/false, a_out, ipiv_out);
+}
+
+template <ffi::DataType dtype>
+ffi::Error LdlDecomposition<dtype>::KernelHe(
+    ffi::Buffer<dtype> a, bool lower,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  return Kernel(a, lower, /*hermitian=*/true, a_out, ipiv_out);
+}
+
+// ---------------------------------------------------------------------------
+// Explicit instantiations — LdlDecomposition
+// ---------------------------------------------------------------------------
+template struct LdlDecomposition<ffi::DataType::F32>;
+template struct LdlDecomposition<ffi::DataType::F64>;
+template struct LdlDecomposition<ffi::DataType::C64>;
+template struct LdlDecomposition<ffi::DataType::C128>;
+
+
 }  // namespace jaxtra

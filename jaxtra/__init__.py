@@ -7,6 +7,13 @@ Currently exposed:
   • ``qr_multiply`` — combined QR decomposition + Q-multiply, backed by LAPACK
                       dormqr/sormqr/cunmqr/zunmqr, available at
                       ``jaxtra.scipy.linalg.qr_multiply``.
+  • ``ldl`` — LDL factorization of symmetric/Hermitian indefinite matrices,
+              backed by LAPACK ``sytrf``/``hetrf`` (CPU) and cuSOLVER ``sytrf``
+              (GPU), available at ``jaxtra.lax.linalg.ldl`` (primitive) and
+              ``jaxtra.scipy.linalg.ldl`` (scipy-compatible).
+  • ``ldl_solve`` — solve A x = b from an LDL factorization, backed by LAPACK
+                    ``sytrs``/``hetrs`` (CPU), available at
+                    ``jaxtra.lax.linalg.ldl_solve``.
   • ``pentadiagonal_solve`` — pentadiagonal banded linear solve A x = b, backed
                       by LAPACK ``gbsv`` (CPU) and cuSPARSE
                       ``gpsvInterleavedBatch`` (GPU), available at

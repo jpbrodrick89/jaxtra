@@ -154,5 +154,86 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(OrmqrFfi, OrmqrDispatch,
                                   .Ret<ffi::AnyBuffer>()  // out
 );
 
+// Symmetric/complex-symmetric indefinite factorization: sytrf
+// For complex Hermitian on GPU the Python lowering falls back to LU;
+// this handler is only dispatched for symmetric (not Hermitian) matrices.
+// cuSolver provides all four dtype variants (S/D/C/Z).
+
+#ifdef JAX_GPU_CUDA
+template <typename T>
+ffi::Error SytrfImpl(int64_t batch, int64_t n, bool lower,
+                     gpuStream_t stream, ffi::ScratchAllocator& scratch,
+                     ffi::AnyBuffer a, ffi::Result<ffi::AnyBuffer> a_out,
+                     ffi::Result<ffi::AnyBuffer> ipiv_out) {
+  FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n));
+
+  gpusolverFillMode_t uplo =
+      lower ? GPUSOLVER_FILL_MODE_LOWER : GPUSOLVER_FILL_MODE_UPPER;
+
+  FFI_ASSIGN_OR_RETURN(auto handle, SolverHandlePool::Borrow(stream));
+
+  auto a_data   = static_cast<T*>(a.untyped_data());
+  auto out_data = static_cast<T*>(a_out->untyped_data());
+  if (a_data != out_data) {
+    JAX_FFI_RETURN_IF_GPU_ERROR(gpuMemcpyAsync(
+        out_data, a_data, a.size_bytes(), gpuMemcpyDeviceToDevice, stream));
+  }
+
+  // Query workspace size using the first-batch pointer.
+  FFI_ASSIGN_OR_RETURN(int lwork,
+                       solver::SytrfBufferSize<T>(handle.get(), n_v,
+                                                  out_data, n_v));
+  FFI_ASSIGN_OR_RETURN(auto workspace,
+                       AllocateWorkspace<T>(scratch, lwork, "sytrf"));
+  FFI_ASSIGN_OR_RETURN(auto info,
+                       AllocateWorkspace<int>(scratch, 1, "sytrf"));
+
+  auto ipiv_data = static_cast<int*>(ipiv_out->untyped_data());
+
+  int64_t step      = static_cast<int64_t>(n_v) * n_v;
+  int64_t ipiv_step = static_cast<int64_t>(n_v);
+
+  for (auto i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR_STATUS(solver::Sytrf<T>(
+        handle.get(), uplo, n_v, out_data, n_v, ipiv_data,
+        workspace, lwork, info));
+    out_data  += step;
+    ipiv_data += ipiv_step;
+  }
+  return ffi::Error::Success();
+}
+
+ffi::Error SytrfDispatch(gpuStream_t stream, ffi::ScratchAllocator scratch,
+                          ffi::AnyBuffer a, bool lower,
+                          ffi::Result<ffi::AnyBuffer> a_out,
+                          ffi::Result<ffi::AnyBuffer> ipiv_out) {
+  auto dataType = a.element_type();
+  if (dataType != a_out->element_type()) {
+    return ffi::Error::InvalidArgument(
+        "The input and output of sytrf must have the same element type");
+  }
+  FFI_ASSIGN_OR_RETURN((auto [batch, n_rows, n_cols]),
+                       SplitBatch2D(a.dimensions()));
+  if (n_rows != n_cols) {
+    return ffi::Error::InvalidArgument("sytrf requires a square matrix");
+  }
+  SOLVER_DISPATCH_IMPL(SytrfImpl, batch, n_rows, lower,
+                       stream, scratch, a, a_out, ipiv_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in sytrf", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(SytrfFfi, SytrfDispatch,
+                              ffi::Ffi::Bind()
+                                  .Ctx<ffi::PlatformStream<gpuStream_t>>()
+                                  .Ctx<ffi::ScratchAllocator>()
+                                  .Arg<ffi::AnyBuffer>()  // a
+                                  .Attr<bool>("lower")
+                                  .Ret<ffi::AnyBuffer>()  // a_out
+                                  .Ret<ffi::AnyBuffer>()  // ipiv_out
+);
+
+#endif  // JAX_GPU_CUDA
+
 }  // namespace JAX_GPU_NAMESPACE
 }  // namespace jax

@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 # JAXTRA_CUDA: ON = require CUDA, OFF = skip GPU extension, auto = detect (default).
 # Set via cmake define (-DJAXTRA_CUDA=ON/OFF) or the JAXTRA_CUDA env var (via pyproject.toml).
-# The GPU source files are host code only (no __global__ kernels), so LANGUAGES CUDA is not needed.
+# GPU extension uses one CUDA kernel file (jaxlib/gpu/linalg_kernels.cu.cc); CUDA language
+# is enabled inside the if(_jaxtra_cuda_build) block when building that extension.
 set(JAXTRA_CUDA "auto" CACHE STRING "Build CUDA GPU extension (_jaxtra_cuda): ON | OFF | auto")
 
 project(jaxtra LANGUAGES CXX)
@@ -107,6 +108,13 @@ endif()
 if(_jaxtra_cuda_build)
   # CUDAToolkit already found in the detection block above.
 
+  # Enable CUDA language for compiling __global__ kernels (linalg_kernels.cu.cc).
+  # Must come before any target that uses CUDA sources.
+  set(CMAKE_CUDA_COMPILER "${CUDAToolkit_NVCC_EXECUTABLE}")
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 20)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
   # Abseil 20260107.1 requires C++20; bump the standard here so CUDA toolkit
   # detection (above) ran with C++17, which FindCUDAToolkit/FindThreads needs.
   # Also set CMAKE_CXX_FLAGS directly so abseil's check_cxx_source_compiles
@@ -134,6 +142,22 @@ if(_jaxtra_cuda_build)
     FetchContent_MakeAvailable(abseil-cpp)
   endif()
 
+  # --- LDL kernel OBJECT library (compiled by nvcc via LANGUAGE CUDA) ---
+  # .cu.cc extension is not auto-detected by CMake; set_source_files_properties
+  # tells CMake to compile this file with the CUDA compiler (nvcc).
+  add_library(jaxtra_linalg_kernels OBJECT
+    jaxlib/gpu/linalg_kernels.cu.cc)
+  set_source_files_properties(jaxlib/gpu/linalg_kernels.cu.cc
+    PROPERTIES LANGUAGE CUDA)
+  set_target_properties(jaxtra_linalg_kernels PROPERTIES
+    CUDA_STANDARD 20
+    POSITION_INDEPENDENT_CODE ON)
+  target_compile_definitions(jaxtra_linalg_kernels PRIVATE JAX_GPU_CUDA)
+  target_include_directories(jaxtra_linalg_kernels PRIVATE
+    ${XLA_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}      # resolves jaxlib/gpu/vendor.h
+    ${CUDAToolkit_INCLUDE_DIRS})
+
   # --- _jaxtra_cuda module ---
   nanobind_add_module(_jaxtra_cuda MODULE
     jaxlib/cuda/jaxtra_cuda_module.cc
@@ -143,6 +167,7 @@ if(_jaxtra_cuda_build)
     jaxlib/gpu/solver_handle_pool.cc
     jaxlib/gpu/sparse_kernels_ffi.cc
     jaxlib/gpu/sparse_handle_pool.cc
+    $<TARGET_OBJECTS:jaxtra_linalg_kernels>
   )
 
   target_compile_definitions(_jaxtra_cuda PRIVATE JAX_GPU_CUDA)
@@ -192,4 +217,40 @@ if(_jaxtra_cuda_build)
 
   install(TARGETS _jaxtra_cuda LIBRARY DESTINATION jaxtra)
   message(STATUS "Building _jaxtra_cuda (CUDA GPU extension)")
+
+  # --- _jaxtra_hybrid module ---
+  # Hybrid kernels: LAPACK hetrf/hetrs on CPU, dispatched via CUDA FFI.
+  # LAPACK pointers loaded from scipy at import time (no LAPACK link needed).
+  nanobind_add_module(_jaxtra_hybrid MODULE
+    jaxlib/cuda/jaxtra_hybrid_module.cc
+    jaxlib/gpu/hybrid_kernels_ffi.cc
+    jaxlib/gpu/gpu_kernel_helpers.cc
+  )
+
+  target_compile_definitions(_jaxtra_hybrid PRIVATE JAX_GPU_CUDA)
+
+  target_include_directories(_jaxtra_hybrid PRIVATE
+    ${XLA_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CUDAToolkit_INCLUDE_DIRS}
+    ${CUDNN_INCLUDE_DIR}
+    ${CUPTI_INCLUDE_DIR}
+  )
+
+  target_compile_options(_jaxtra_hybrid PRIVATE
+    -Wno-sign-conversion
+    -Wno-unused-parameter
+  )
+
+  target_link_libraries(_jaxtra_hybrid PRIVATE
+    CUDA::cudart
+    absl::status
+    absl::statusor
+    absl::str_format
+    absl::strings
+    absl::log
+  )
+
+  install(TARGETS _jaxtra_hybrid LIBRARY DESTINATION jaxtra)
+  message(STATUS "Building _jaxtra_hybrid (hybrid CPU-LAPACK / GPU-dispatch extension)")
 endif()

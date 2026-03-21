@@ -131,4 +131,54 @@ extern template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ---------------------------------------------------------------------------
+// LdlDecomposition<dtype>
+// ---------------------------------------------------------------------------
+// Symmetric/Hermitian indefinite factorization via LAPACK sytrf / hetrf.
+//
+// `fn`    — sytrf pointer (ssytrf/dsytrf for real; csytrf/zsytrf for complex
+//            symmetric). Set at import time by _jaxtra.initialize().
+// `fn_he` — hetrf pointer (chetrf/zhetrf for complex Hermitian only).
+//            nullptr for real types.
+//
+// Both function pointers share the same Fortran calling convention.
+template <ffi::DataType dtype>
+struct LdlDecomposition {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for sytrf / hetrf (identical signature).
+  using FnType = void(char* /*uplo*/, int* /*n*/, ValueType* /*a*/,
+                      int* /*lda*/, int* /*ipiv*/, ValueType* /*work*/,
+                      int* /*lwork*/, int* /*info*/);
+
+  // fn: sytrf variant; fn_he: hetrf variant (nullptr for real types).
+  inline static FnType* fn = nullptr;
+  inline static FnType* fn_he = nullptr;
+
+  // Kernel: factors a (in-place → a_out), writes pivot indices to ipiv_out.
+  static ffi::Error Kernel(ffi::Buffer<dtype> a, bool lower, bool hermitian,
+                            ffi::ResultBuffer<dtype> a_out,
+                            ffi::ResultBuffer<ffi::DataType::S32> ipiv_out);
+
+  // Thin wrappers without a hermitian attribute — used by the separate
+  // sytrf_ffi (KernelSy) and hetrf_ffi (KernelHe) FFI targets so that each
+  // handler only declares the attributes it actually needs.
+  static ffi::Error KernelSy(ffi::Buffer<dtype> a, bool lower,
+                              ffi::ResultBuffer<dtype> a_out,
+                              ffi::ResultBuffer<ffi::DataType::S32> ipiv_out);
+  static ffi::Error KernelHe(ffi::Buffer<dtype> a, bool lower,
+                              ffi::ResultBuffer<dtype> a_out,
+                              ffi::ResultBuffer<ffi::DataType::S32> ipiv_out);
+
+  // LAPACK workspace query.  Returns -1 on failure.
+  static int64_t GetWorkspaceSize(char uplo, int n, bool hermitian);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct LdlDecomposition<ffi::DataType::F32>;
+extern template struct LdlDecomposition<ffi::DataType::F64>;
+extern template struct LdlDecomposition<ffi::DataType::C64>;
+extern template struct LdlDecomposition<ffi::DataType::C128>;
+
+
 }  // namespace jaxtra

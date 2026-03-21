@@ -301,6 +301,193 @@ CMake auto-detects the CUDA toolkit: `_jaxtra_cuda.so` is built when `nvcc`/`CUD
 
 ---
 
+## 1e. GPU hybrid path (no cuSOLVER equivalent)
+
+Some LAPACK routines have no cuSOLVER counterpart (e.g. `?hetrf` / `?hetrs` —
+Hermitian indefinite factorization and solve). For these, jaxtra uses a
+**hybrid** kernel: the handler is registered on the CUDA platform, receives
+GPU buffer pointers, explicitly copies data device→host, calls LAPACK on the
+CPU, then copies results back device. This mirrors the `_hybrid.so` pattern
+used by JAX for `geqp3` with MAGMA absent.
+
+### When to use hybrid vs. cuSOLVER directly
+
+| Situation                                                                                                                                  | Approach                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| cuSOLVER has no equivalent at all (e.g. hetrf/hetrs)                                                                                       | **Hybrid** — full D→H→LAPACK→H→D                                                                       |
+| cuSOLVER has the routine but with a different integer width or API (e.g. `cusolverDnXsytrs` needs `int64` ipiv but `sytrf` stores `int32`) | **cuSOLVER with conversion** — do the int32→int64 cast in the FFI handler; keep the computation on GPU |
+| cuSOLVER has a direct equivalent                                                                                                           | **cuSOLVER directly** — see section 1d                                                                 |
+
+The hybrid path imposes a full PCIe round-trip for the factor matrix and RHS
+(O(n²) data). For n ≲ 100 the latency is negligible; for large n prefer
+cuSOLVER or MAGMA. The int-conversion approach (middle row) keeps all heavy
+compute on the GPU and only adds an O(n) round-trip for the pivot array.
+
+### Files to touch
+
+| File                                  | What to add                                                      |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `jaxlib/gpu/hybrid_kernels_ffi.h`     | Template struct + extern instantiation declarations              |
+| `jaxlib/gpu/hybrid_kernels_ffi.cc`    | Kernel implementation + explicit instantiations + handler macros |
+| `jaxlib/cuda/jaxtra_hybrid_module.cc` | `initialize()` pointer loads + `registrations()` entries         |
+| `jaxtra/_src/lax/linalg.py`           | Route the GPU lowering to `cuhybrid_Xname_ffi`                   |
+
+`jaxtra/_src/lib/gpu_hybrid.py` requires **no change** — it already loads
+`_jaxtra_hybrid` and calls `initialize()`.
+
+### `hybrid_kernels_ffi.h` — declare the struct
+
+```cpp
+template <ffi::DataType dtype>
+struct HybridMyKernel {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Match the LAPACK Fortran signature exactly.
+  using FnType = void(char* /*uplo*/, int* /*n*/, ValueType* /*a*/,
+                      /* ... */, int* /*info*/);
+
+  inline static FnType* fn = nullptr;  // set by initialize()
+
+  // NOTE: take gpuStream_t directly — XLA FFI auto-unwraps PlatformStream<T>
+  // before calling the handler; using PlatformStream here is a compile error.
+  static ffi::Error Kernel(gpuStream_t stream,
+                            ffi::Buffer<dtype> a, bool lower,
+                            ffi::ResultBuffer<dtype> a_out,
+                            ffi::ResultBuffer<ffi::DataType::S32> ipiv_out);
+};
+
+extern template struct HybridMyKernel<ffi::DataType::C64>;
+extern template struct HybridMyKernel<ffi::DataType::C128>;
+
+XLA_FFI_DECLARE_HANDLER_SYMBOL(cuhybrid_cmykernel_ffi);
+XLA_FFI_DECLARE_HANDLER_SYMBOL(cuhybrid_zmykernel_ffi);
+```
+
+### `hybrid_kernels_ffi.cc` — implement the kernel
+
+The standard pattern is: **sync → D→H copy → sync → LAPACK loop → H→D copy → sync**.
+The final sync keeps host buffers (`std::vector`) alive until the async
+H→D copy completes.
+
+```cpp
+template <ffi::DataType dtype>
+ffi::Error HybridMyKernel<dtype>::Kernel(
+    gpuStream_t stream,
+    ffi::Buffer<dtype> a, bool lower,
+    ffi::ResultBuffer<dtype> a_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  if (fn == nullptr) {
+    return ffi::Error(ffi::ErrorCode::kInternal,
+                      "HybridMyKernel: not initialized");
+  }
+  FFI_ASSIGN_OR_RETURN((auto [batch, n_rows, n_cols]),
+                       SplitBatch2D(a.dimensions()));
+  // ... workspace query, host buffer allocation ...
+
+  // 1. Ensure prior GPU writes to `a` are visible before D→H copy.
+  JAX_FFI_RETURN_IF_GPU_ERROR(gpuStreamSynchronize(stream));
+
+  // 2. Copy input buffers device → host.
+  JAX_FFI_RETURN_IF_GPU_ERROR(
+      gpuMemcpyAsync(h_a.data(), a.typed_data(),
+                     batch * a_elems * sizeof(ValueType),
+                     gpuMemcpyDeviceToHost, stream));
+  JAX_FFI_RETURN_IF_GPU_ERROR(gpuStreamSynchronize(stream));
+
+  // 3. Call LAPACK on the host for each batch element.
+  for (int64_t i = 0; i < batch; ++i) {
+    fn(/* ... */);
+  }
+
+  // 4. Copy results host → device (async on the stream).
+  JAX_FFI_RETURN_IF_GPU_ERROR(
+      gpuMemcpyAsync(a_out->typed_data(), h_a.data(),
+                     batch * a_elems * sizeof(ValueType),
+                     gpuMemcpyHostToDevice, stream));
+
+  // 5. Sync so host buffers (stack-allocated std::vector) stay alive.
+  JAX_FFI_RETURN_IF_GPU_ERROR(gpuStreamSynchronize(stream));
+  return ffi::Error::Success();
+}
+
+// Explicit instantiations
+template struct HybridMyKernel<ffi::DataType::C64>;
+template struct HybridMyKernel<ffi::DataType::C128>;
+
+// Handler definitions — note PlatformStream in the macro binding; XLA
+// unwraps it to gpuStream_t before calling Kernel.
+#define JAXTRA_GPU_DEFINE_HYBRID_MYKERNEL(name, dtype)          \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                 \
+      name, HybridMyKernel<dtype>::Kernel,                       \
+      ffi::Ffi::Bind()                                           \
+          .Ctx<ffi::PlatformStream<gpuStream_t>>()               \
+          .Arg<ffi::Buffer<dtype>>()              /* a */        \
+          .Attr<bool>("lower")                                    \
+          .Ret<ffi::Buffer<dtype>>()              /* a_out */    \
+          .Ret<ffi::Buffer<ffi::DataType::S32>>()) /* ipiv_out */
+
+JAXTRA_GPU_DEFINE_HYBRID_MYKERNEL(cuhybrid_cmykernel_ffi, ffi::DataType::C64);
+JAXTRA_GPU_DEFINE_HYBRID_MYKERNEL(cuhybrid_zmykernel_ffi, ffi::DataType::C128);
+```
+
+### `jaxtra_hybrid_module.cc` — register in the CUDA module
+
+In `initialize()`, load the LAPACK pointer from `scipy.linalg.cython_lapack`:
+
+```cpp
+AssignFn<HybridMyKernel<ffi::DataType::C64>>(lapack_ptr("cmykernel"));
+AssignFn<HybridMyKernel<ffi::DataType::C128>>(lapack_ptr("zmykernel"));
+```
+
+In `registrations()`, append to `gpu_targets`:
+
+```cpp
+make_entry("cuhybrid_cmykernel_ffi",
+           reinterpret_cast<void*>(cuhybrid_cmykernel_ffi));
+make_entry("cuhybrid_zmykernel_ffi",
+           reinterpret_cast<void*>(cuhybrid_zmykernel_ffi));
+```
+
+Note that `registrations()` returns `{"CUDA": [...]}` (not `{"cpu": [...]}`).
+
+### Python lowering — route to the hybrid target
+
+In the GPU branch of `_mycall_cpu_gpu_lowering` in `linalg.py`:
+
+```python
+if target_name_prefix != "cpu":
+    # No cuSOLVER equivalent; use hybrid CPU-LAPACK kernel.
+    char = "c" if dtype == np.complex64 else "z"
+    target_name = f"{target_name_prefix}hybrid_{char}mykernel_ffi"
+    rule = _linalg_ffi_lowering(target_name, avals_out=[...],
+                                 operand_output_aliases={0: 0})
+    return rule(ctx, a, lower=lower)
+```
+
+The `target_name_prefix` is `"cu"` for CUDA, so `f"{target_name_prefix}hybrid_cmykernel_ffi"` produces `"cuhybrid_cmykernel_ffi"` — matching the name registered in `jaxtra_hybrid_module.cc`.
+
+### Update `docs/conf.py`
+
+The Sphinx stub list must include the new module so docs can be built without
+the compiled `.so`:
+
+```python
+for _mod in ("jaxtra._jaxtra", "jaxtra._jaxtra_cuda", "jaxtra._jaxtra_hybrid"):
+    _stub = types.ModuleType(_mod)
+    _stub.initialize = lambda: None
+    _stub.registrations = lambda: {}
+    sys.modules[_mod] = _stub
+```
+
+### CMakeLists.txt
+
+The `_jaxtra_hybrid` target is already defined inside the
+`if(_jaxtra_cuda_build)` block. If you only add new kernels to the existing
+`hybrid_kernels_ffi.h/.cc` files no CMake change is needed. Only edit
+`CMakeLists.txt` if you create an entirely new `.cc` source file.
+
+---
+
 ## 3. Python primitive (`jaxtra/_src/lax/linalg.py`)
 
 Each routine needs four things in `_src/lax/linalg.py`: a public function,
