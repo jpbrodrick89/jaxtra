@@ -41,7 +41,7 @@ jobs:
           platforms: arm64
 
       # ── Build wheels ─────────────────────────────────────────────────────
-      - uses: pypa/cibuildwheel@v3.4
+      - uses: pypa/cibuildwheel@v4.0
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp311-* cp312-* cp313-* cp314-*"
