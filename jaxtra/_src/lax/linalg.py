@@ -637,11 +637,11 @@ def tpqrt(a: ArrayLike, b: ArrayLike, *,
 
   Note:
     On CPU this dispatches to LAPACK ``tpqrt``. On other platforms (or under
-    ``vmap``/``grad`` tracing) it falls back to a pure-JAX Householder
-    triangularisation that annihilates ``b`` one column at a time against the
-    triangular ``a`` (``n`` rank-1 updates). The sign/phase convention of the
-    reflectors may differ from LAPACK's, so individual rows of ``R`` may differ
-    by a unit-modulus phase; ``Rᴴ R`` is identical.
+    ``vmap``/``grad`` tracing) it falls back to a pure-JAX *blocked* Householder
+    triangularisation (compact-WY, the same blocking LAPACK uses), with ``nb``
+    as the panel width. The sign/phase convention of the reflectors may differ
+    from LAPACK's, so individual rows of ``R`` may differ by a unit-modulus
+    phase; ``Rᴴ R`` is identical.
   """
   a_arr, b_arr = jnp.asarray(a), jnp.asarray(b)
   m, n = b_arr.shape[-2], b_arr.shape[-1]
@@ -742,15 +742,40 @@ def _tpqrt_givens_2d(a, b, l):
   return Rt[:n]
 
 
+def _tpqrt_reflector(alpha, tail, conj, real):
+  """Householder reflector ``H = I - tau v vᴴ`` with ``v = [1; v_tail]`` such
+  that ``H [alpha; tail] = [beta; 0]``. Returns ``(tau, v_tail)``.
+
+  The reflected pivot ``beta = -(alpha/|alpha|) * ||[alpha; tail]||`` carries the
+  phase of ``alpha`` (its sign, for real types); this is what makes the
+  reflector annihilate the tail for complex inputs, not just real ones.
+  """
+  dtype = alpha.dtype
+  xnorm2 = real(jnp.sum(conj(tail) * tail))
+  absalpha2 = real(conj(alpha) * alpha)
+  mu = jnp.sqrt(absalpha2 + xnorm2)
+  absalpha = jnp.sqrt(absalpha2)
+  phase = jnp.where(absalpha == 0, jnp.ones_like(alpha),
+                    alpha / absalpha.astype(dtype))
+  beta = -phase * mu.astype(dtype)
+  reflect = xnorm2 > 0                  # tail already zero => nothing to do
+  safe_beta = jnp.where(reflect, beta, jnp.ones_like(beta))
+  safe_den = jnp.where(reflect, alpha - beta, jnp.ones_like(beta))
+  tau = jnp.where(reflect, (safe_beta - alpha) / safe_beta,
+                  jnp.zeros_like(alpha))
+  v_tail = jnp.where(reflect, tail / safe_den, jnp.zeros_like(tail))
+  return tau, v_tail
+
+
 def _tpqrt_householder_2d(a, b, l):
   """Pure-JAX Householder triangularisation of ``[a; b]`` (unbatched).
 
-  The LAPACK-like fallback. Column ``j`` of the stack ``[a; b]`` has all of its
-  sub-diagonal mass in ``b`` (``a`` is already upper triangular), so a single
-  Householder reflector mixing the pivot row ``R[j, :]`` with the ``m`` rows of
-  ``b`` zeros ``b[:, j]``. Sweeping ``j = 0 .. n-1`` triangularises the stack in
-  ``n`` steps, each a dense rank-1 update — no gather/scatter, only a single
-  ``dynamic_update_slice`` for the pivot row.
+  The unblocked LAPACK-like fallback. Column ``j`` of the stack ``[a; b]`` has
+  all of its sub-diagonal mass in ``b`` (``a`` is already upper triangular), so
+  a single Householder reflector mixing the pivot row ``R[j, :]`` with the ``m``
+  rows of ``b`` zeros ``b[:, j]``. Sweeping ``j = 0 .. n-1`` triangularises the
+  stack in ``n`` steps, each a dense rank-1 update — no gather/scatter, only a
+  single ``dynamic_update_slice`` for the pivot row.
   """
   n = a.shape[-1]
   m = b.shape[-2]
@@ -764,25 +789,7 @@ def _tpqrt_householder_2d(a, b, l):
 
   def body(j, carry):
     R, B = carry
-    alpha = R[j, j]                       # pivot
-    tail = B[:, j]                        # (m,) column to annihilate
-    xnorm2 = real(jnp.sum(conj(tail) * tail))
-    absalpha2 = real(conj(alpha) * alpha)
-    # Reflected pivot beta = -(alpha/|alpha|) * ||[alpha; tail]||. Carrying the
-    # phase of alpha (sign, for real types) is what makes the reflector zero
-    # the tail for complex inputs, not just real ones.
-    mu = jnp.sqrt(absalpha2 + xnorm2)
-    absalpha = jnp.sqrt(absalpha2)
-    phase = jnp.where(absalpha == 0, jnp.ones_like(alpha),
-                      alpha / absalpha.astype(dtype))
-    beta = -phase * mu.astype(dtype)
-    reflect = xnorm2 > 0                  # tail already zero => nothing to do
-    safe_beta = jnp.where(reflect, beta, jnp.ones_like(beta))
-    safe_den = jnp.where(reflect, alpha - beta, jnp.ones_like(beta))
-    # Reflector H = I - tau v vᴴ with v = [1; tail / (alpha - beta)].
-    tau = jnp.where(reflect, (safe_beta - alpha) / safe_beta,
-                    jnp.zeros_like(alpha))
-    v_tail = jnp.where(reflect, tail / safe_den, jnp.zeros_like(tail))
+    tau, v_tail = _tpqrt_reflector(R[j, j], B[:, j], conj, real)
     # vᴴ P over the stacked pivot row and B (columns < j are already zero).
     vHP = R[j, :] + conj(v_tail) @ B
     R = R.at[j].set(R[j, :] - tau * vHP)
@@ -793,9 +800,83 @@ def _tpqrt_householder_2d(a, b, l):
   return jnp.triu(R)
 
 
+def _tpqrt_blocked_householder_2d(a, b, l, nb):
+  """Pure-JAX *blocked* Householder triangularisation of ``[a; b]`` (unbatched).
+
+  The compact-WY ("``T`` matrix") blocking that LAPACK ``tpqrt``/``tprfb`` use.
+  Each reflector's ``R``-component is a unit vector (it pivots on its own row),
+  so the panel reflectors stack as ``V = [I; V_B]`` and the block reflector is
+  ``Q = I - V T Vᴴ`` with ``T`` upper triangular ``pb x pb``. Per panel:
+
+    1. factor the ``pb``-column panel with unblocked reflectors (BLAS-2, small),
+       building ``V_B`` (m x pb) and ``T``;
+    2. apply ``Qᴴ = I - V Tᴴ Vᴴ`` to the trailing columns as three matmuls
+       (BLAS-3): ``W = R_panelᵀ + V_Bᴴ B``, ``Z = Tᴴ W``,
+       ``R_panel -= Z``, ``B -= V_B Z``.
+
+  The dense trailing update is what closes the gap to ``geqrf`` at large ``n``.
+  The panel loop is a Python loop (the panel count is static), so all offsets
+  and slice widths are statically known — no padding, masking, or dynamic
+  slicing. Only the within-panel work is a ``fori_loop`` (over small fixed-size
+  blocks), keeping the traced graph ``O(n / nb)`` rather than ``O(n)``.
+  """
+  n = a.shape[-1]
+  m = b.shape[-2]
+  dtype = a.dtype
+  is_complex = dtypes.issubdtype(dtype, np.complexfloating)
+  conj = lax.conj if is_complex else (lambda x: x)
+  real = lax.real if is_complex else (lambda x: x)
+
+  nb = max(1, min(nb, n))
+  R = jnp.triu(a)
+  B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
+
+  for p in range(0, n, nb):
+    pb = min(nb, n - p)                       # static panel width
+    Rpp = R[p:p + pb, p:p + pb]               # panel diagonal block (pb x pb)
+    Bp = B[:, p:p + pb]                        # panel columns of B (m x pb)
+    iota = jnp.arange(pb)
+
+    # 1. Unblocked factorisation of the panel; collect V_B and tau.
+    def col_body(jl, c):
+      Rpp, Bp, Vb, Tau = c
+      tau, u = _tpqrt_reflector(Rpp[jl, jl], Bp[:, jl], conj, real)
+      Vb = Vb.at[:, jl].set(u)
+      Tau = Tau.at[jl].set(tau)
+      vHP = Rpp[jl, :] + conj(u) @ Bp          # within-panel only (pb,)
+      Rpp = Rpp.at[jl, :].set(Rpp[jl, :] - tau * vHP)
+      Bp = Bp - tau * u[:, None] * vHP[None, :]
+      return Rpp, Bp, Vb, Tau
+
+    Rpp, Bp, Vb, Tau = control_flow.fori_loop(
+        0, pb, col_body,
+        (Rpp, Bp, jnp.zeros((m, pb), dtype), jnp.zeros((pb,), dtype)))
+
+    # 2. Triangular factor T of the block reflector (T[i, j], i <= j).
+    def t_body(j, T):
+      x = (conj(Vb).T @ Vb[:, j]) * (iota < j)  # V_Bᴴ v_j, masked to i < j
+      col = -Tau[j] * (T @ x)                    # rows >= j vanish (T upper-▲)
+      col = jnp.where(iota == j, Tau[j],
+                      jnp.where(iota < j, col, jnp.zeros_like(col)))
+      return T.at[:, j].set(col)
+
+    T = control_flow.fori_loop(0, pb, t_body, jnp.zeros((pb, pb), dtype))
+    R = R.at[p:p + pb, p:p + pb].set(Rpp)
+
+    # 3. BLAS-3 trailing update: Qᴴ = I - V Tᴴ Vᴴ on columns [p + pb:].
+    if p + pb < n:
+      Rtr = R[p:p + pb, p + pb:]               # pivot rows, trailing columns
+      Btr = B[:, p + pb:]
+      W = Rtr + conj(Vb).T @ Btr                # (pb, n - p - pb)
+      Z = conj(T).T @ W
+      R = R.at[p:p + pb, p + pb:].set(Rtr - Z)
+      B = B.at[:, p + pb:].set(Btr - Vb @ Z)
+
+  return jnp.triu(R)
+
+
 def _tpqrt_lowering(a, b, *, l, nb):
-  del nb  # block size only affects the LAPACK path's performance
-  f = partial(_tpqrt_householder_2d, l=l)
+  f = partial(_tpqrt_blocked_householder_2d, l=l, nb=nb)
   for _ in range(a.ndim - 2):
     f = jax.vmap(f)
   return f(a, b)

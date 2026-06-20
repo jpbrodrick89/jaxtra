@@ -13,7 +13,18 @@ jax.config.update("jax_enable_x64", True)
 
 from jax._src.lax.linalg import geqrf
 from jaxtra._src.lax.linalg import (
-    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d)
+    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d,
+    _tpqrt_blocked_householder_2d)
+
+# Pure-JAX fallbacks, each callable as fallback(a, b, l). The blocked
+# Householder is exercised at a few block sizes (incl. nb=1 and nb > n).
+FALLBACKS = {
+    "givens": _tpqrt_givens_2d,
+    "householder": _tpqrt_householder_2d,
+    "blocked_nb1": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 1),
+    "blocked_nb3": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 3),
+    "blocked_nb64": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 64),
+}
 
 RNG = np.random.default_rng(42)
 
@@ -84,8 +95,8 @@ def test_tpqrt_lapack(m, n, l, dtype):
 
 @pytest.mark.parametrize("dtype", all_dtypes)
 @pytest.mark.parametrize("m,n,l", TPQRT_CASES)
-@pytest.mark.parametrize("fallback", [_tpqrt_householder_2d, _tpqrt_givens_2d],
-                         ids=["householder", "givens"])
+@pytest.mark.parametrize("fallback", list(FALLBACKS.values()),
+                         ids=list(FALLBACKS))
 def test_tpqrt_fallback(fallback, m, n, l, dtype):
     a, b = make_pentagonal(m, n, l, dtype)
     R = fallback(a, b, l)
@@ -148,8 +159,8 @@ def test_tpqrt_vmap(dtype):
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
-@pytest.mark.parametrize("fallback", [_tpqrt_householder_2d, _tpqrt_givens_2d],
-                         ids=["householder", "givens"])
+@pytest.mark.parametrize("fallback", list(FALLBACKS.values()),
+                         ids=list(FALLBACKS))
 def test_tpqrt_lapack_matches_fallback(fallback, dtype):
     """The CPU LAPACK path and each pure-JAX fallback agree (Gram-invariant)."""
     m, n, l = 9, 6, 4

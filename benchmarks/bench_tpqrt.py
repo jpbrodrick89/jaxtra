@@ -39,7 +39,8 @@ jax.config.update("jax_enable_x64", True)
 
 from jax._src.lax.linalg import geqrf
 from jaxtra._src.lax.linalg import (
-    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d)
+    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d,
+    _tpqrt_blocked_householder_2d)
 
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -57,6 +58,11 @@ def _lapack_fn(n):
 @functools.lru_cache(maxsize=None)
 def _householder_fn(n):
     return jax.jit(lambda R, D: _tpqrt_householder_2d(R, D, n))
+
+
+@functools.lru_cache(maxsize=None)
+def _blocked_fn(n, nb=32):
+    return jax.jit(lambda R, D: _tpqrt_blocked_householder_2d(R, D, n, nb))
 
 
 @functools.lru_cache(maxsize=None)
@@ -113,10 +119,11 @@ N_WARMUP = 3
 N_REPEAT = 10
 
 METHODS = [
-    ("jaxtra tpqrt (LAPACK)",      "#1f77b4", "o"),
-    ("jaxtra tpqrt (Householder)", "#9467bd", "D"),
-    ("jaxtra tpqrt (Givens)",      "#2ca02c", "^"),
-    ("raw geqrf",                  "#d62728", "s"),
+    ("jaxtra tpqrt (LAPACK)",         "#1f77b4", "o"),
+    ("jaxtra tpqrt (blocked HH)",     "#8c564b", "P"),
+    ("jaxtra tpqrt (unblocked HH)",   "#9467bd", "D"),
+    ("jaxtra tpqrt (Givens)",         "#2ca02c", "^"),
+    ("raw geqrf",                     "#d62728", "s"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -125,15 +132,17 @@ METHODS = [
 
 records = []
 
-print(f"\n{'n':>6}  {'LAPACK (ms)':>12}  {'Householder (ms)':>17}  "
-      f"{'Givens (ms)':>12}  {'geqrf (ms)':>12}  "
-      f"{'LAPACK/geqrf':>13}  {'HH/geqrf':>9}  {'Giv/geqrf':>10}")
-print("-" * 110)
+print(f"\n{'n':>6}  {'LAPACK':>10}  {'blockHH':>10}  {'unblkHH':>10}  "
+      f"{'Givens':>10}  {'geqrf':>10}  "
+      f"{'LAPACK/qr':>10}  {'blkHH/qr':>9}  {'HH/qr':>7}  {'Giv/qr':>7}")
+print(f"{'':6}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}")
+print("-" * 116)
 
 for n in SIZES:
     R, D = make_problem(n)
 
     f_lapack = _lapack_fn(n)
+    f_blocked = _blocked_fn(n)
     f_house = _householder_fn(n)
     f_givens = _givens_fn(n)
     f_geqrf = _geqrf_fn(n)
@@ -141,24 +150,25 @@ for n in SIZES:
     # Sanity check: all agree (sign/phase-invariant via the Gram matrix).
     g = lambda M: M.conj().T @ M
     ref = g(f_geqrf(R, D))
-    assert float(jnp.max(jnp.abs(g(f_lapack(R, D)) - ref))) < 1e-7
-    assert float(jnp.max(jnp.abs(g(f_house(R, D)) - ref))) < 1e-7
-    assert float(jnp.max(jnp.abs(g(f_givens(R, D)) - ref))) < 1e-7
+    for f in (f_lapack, f_blocked, f_house, f_givens):
+        assert float(jnp.max(jnp.abs(g(f(R, D)) - ref))) < 1e-7
 
     t_lapack = time_jax_fn(f_lapack, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_blocked = time_jax_fn(f_blocked, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_house = time_jax_fn(f_house, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_givens = time_jax_fn(f_givens, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_geqrf = time_jax_fn(f_geqrf, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
-    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK)",      "time_ms": t_lapack * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (Householder)", "time_ms": t_house * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (Givens)",      "time_ms": t_givens * 1e3})
-    records.append({"n": n, "method": "raw geqrf",                  "time_ms": t_geqrf * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK)",       "time_ms": t_lapack * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (blocked HH)",   "time_ms": t_blocked * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (unblocked HH)", "time_ms": t_house * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (Givens)",       "time_ms": t_givens * 1e3})
+    records.append({"n": n, "method": "raw geqrf",                   "time_ms": t_geqrf * 1e3})
 
-    print(f"{n:>6d}  {t_lapack*1e3:12.3f}  {t_house*1e3:17.3f}  "
-          f"{t_givens*1e3:12.3f}  {t_geqrf*1e3:12.3f}  "
-          f"{t_lapack/t_geqrf:12.2f}x  {t_house/t_geqrf:8.2f}x  "
-          f"{t_givens/t_geqrf:9.2f}x")
+    print(f"{n:>6d}  {t_lapack*1e3:10.3f}  {t_blocked*1e3:10.3f}  "
+          f"{t_house*1e3:10.3f}  {t_givens*1e3:10.3f}  {t_geqrf*1e3:10.3f}  "
+          f"{t_lapack/t_geqrf:9.2f}x  {t_blocked/t_geqrf:8.2f}x  "
+          f"{t_house/t_geqrf:6.2f}x  {t_givens/t_geqrf:6.2f}x")
 
 # ---------------------------------------------------------------------------
 # Write CSV
