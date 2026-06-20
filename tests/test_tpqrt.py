@@ -12,7 +12,8 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from jax._src.lax.linalg import geqrf
-from jaxtra._src.lax.linalg import tpqrt, _tpqrt_givens_2d
+from jaxtra._src.lax.linalg import (
+    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d)
 
 RNG = np.random.default_rng(42)
 
@@ -83,9 +84,11 @@ def test_tpqrt_lapack(m, n, l, dtype):
 
 @pytest.mark.parametrize("dtype", all_dtypes)
 @pytest.mark.parametrize("m,n,l", TPQRT_CASES)
-def test_tpqrt_givens_fallback(m, n, l, dtype):
+@pytest.mark.parametrize("fallback", [_tpqrt_householder_2d, _tpqrt_givens_2d],
+                         ids=["householder", "givens"])
+def test_tpqrt_fallback(fallback, m, n, l, dtype):
     a, b = make_pentagonal(m, n, l, dtype)
-    R = _tpqrt_givens_2d(a, b, l)
+    R = fallback(a, b, l)
     expected = reference_R(a, b)
     tol = tol_for(dtype)
     np.testing.assert_allclose(gram(R), gram(expected), rtol=tol, atol=tol)
@@ -132,7 +135,7 @@ def test_tpqrt_batched(dtype):
 
 @pytest.mark.parametrize("dtype", all_dtypes)
 def test_tpqrt_vmap(dtype):
-    batch, n, m, l = 3, 6, 6, 6
+    batch, n, l = 3, 6, 6
     a = jnp.triu(jnp.asarray(rand((batch, n, n), dtype)))
     b = jax.vmap(jnp.diag)(jnp.asarray(rand((batch, n), dtype)))
 
@@ -145,14 +148,16 @@ def test_tpqrt_vmap(dtype):
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
-def test_tpqrt_lapack_matches_givens(dtype):
-    """The CPU LAPACK path and the pure-JAX fallback agree (Gram-invariant)."""
+@pytest.mark.parametrize("fallback", [_tpqrt_householder_2d, _tpqrt_givens_2d],
+                         ids=["householder", "givens"])
+def test_tpqrt_lapack_matches_fallback(fallback, dtype):
+    """The CPU LAPACK path and each pure-JAX fallback agree (Gram-invariant)."""
     m, n, l = 9, 6, 4
     a, b = make_pentagonal(m, n, l, dtype)
     R_lapack = tpqrt(a, b, l=l)
-    R_givens = _tpqrt_givens_2d(a, b, l)
+    R_fallback = fallback(a, b, l)
     tol = tol_for(dtype)
-    np.testing.assert_allclose(gram(R_lapack), gram(R_givens),
+    np.testing.assert_allclose(gram(R_lapack), gram(R_fallback),
                                rtol=tol, atol=tol)
 
 

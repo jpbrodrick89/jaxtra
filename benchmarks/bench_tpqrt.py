@@ -11,8 +11,10 @@ compute R̃ are compared:
 
   jaxtra tpqrt (LAPACK)  : tpqrt(R, D, l=n)  — LAPACK ?tpqrt, exploits both the
                            triangular R and the triangular (diagonal) D
-  jaxtra tpqrt (Givens)  : the pure-JAX block-Givens fallback — sweeps the
-                           m + n - 1 independent anti-diagonal rotation blocks
+  jaxtra tpqrt (Householder) : the pure-JAX fallback — n column reflectors, each
+                           a dense rank-1 update (no gather/scatter)
+  jaxtra tpqrt (Givens)  : the earlier pure-JAX fallback — sweeps the m + n - 1
+                           independent anti-diagonal rotation blocks
   raw geqrf              : jax._src.lax.linalg.geqrf on the dense (2n, n) stack,
                            taking triu of the first n rows (no structure used)
 
@@ -36,7 +38,8 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from jax._src.lax.linalg import geqrf
-from jaxtra._src.lax.linalg import tpqrt, _tpqrt_givens_2d
+from jaxtra._src.lax.linalg import (
+    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d)
 
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -49,6 +52,11 @@ RESULTS_DIR.mkdir(exist_ok=True)
 @functools.lru_cache(maxsize=None)
 def _lapack_fn(n):
     return jax.jit(lambda R, D: tpqrt(R, D, l=n))
+
+
+@functools.lru_cache(maxsize=None)
+def _householder_fn(n):
+    return jax.jit(lambda R, D: _tpqrt_householder_2d(R, D, n))
 
 
 @functools.lru_cache(maxsize=None)
@@ -105,9 +113,10 @@ N_WARMUP = 3
 N_REPEAT = 10
 
 METHODS = [
-    ("jaxtra tpqrt (LAPACK)", "#1f77b4", "o"),
-    ("jaxtra tpqrt (Givens)", "#2ca02c", "^"),
-    ("raw geqrf",             "#d62728", "s"),
+    ("jaxtra tpqrt (LAPACK)",      "#1f77b4", "o"),
+    ("jaxtra tpqrt (Householder)", "#9467bd", "D"),
+    ("jaxtra tpqrt (Givens)",      "#2ca02c", "^"),
+    ("raw geqrf",                  "#d62728", "s"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -116,33 +125,40 @@ METHODS = [
 
 records = []
 
-print(f"\n{'n':>6}  {'tpqrt LAPACK (ms)':>18}  {'tpqrt Givens (ms)':>18}  "
-      f"{'geqrf (ms)':>12}  {'LAPACK/geqrf':>13}  {'Givens/geqrf':>13}")
-print("-" * 92)
+print(f"\n{'n':>6}  {'LAPACK (ms)':>12}  {'Householder (ms)':>17}  "
+      f"{'Givens (ms)':>12}  {'geqrf (ms)':>12}  "
+      f"{'LAPACK/geqrf':>13}  {'HH/geqrf':>9}  {'Giv/geqrf':>10}")
+print("-" * 110)
 
 for n in SIZES:
     R, D = make_problem(n)
 
     f_lapack = _lapack_fn(n)
+    f_house = _householder_fn(n)
     f_givens = _givens_fn(n)
     f_geqrf = _geqrf_fn(n)
 
-    # Sanity check: all three agree (sign/phase-invariant via the Gram matrix).
+    # Sanity check: all agree (sign/phase-invariant via the Gram matrix).
     g = lambda M: M.conj().T @ M
     ref = g(f_geqrf(R, D))
     assert float(jnp.max(jnp.abs(g(f_lapack(R, D)) - ref))) < 1e-7
+    assert float(jnp.max(jnp.abs(g(f_house(R, D)) - ref))) < 1e-7
     assert float(jnp.max(jnp.abs(g(f_givens(R, D)) - ref))) < 1e-7
 
     t_lapack = time_jax_fn(f_lapack, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
+    t_house = time_jax_fn(f_house, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_givens = time_jax_fn(f_givens, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_geqrf = time_jax_fn(f_geqrf, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
-    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK)", "time_ms": t_lapack * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (Givens)", "time_ms": t_givens * 1e3})
-    records.append({"n": n, "method": "raw geqrf",             "time_ms": t_geqrf * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK)",      "time_ms": t_lapack * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (Householder)", "time_ms": t_house * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (Givens)",      "time_ms": t_givens * 1e3})
+    records.append({"n": n, "method": "raw geqrf",                  "time_ms": t_geqrf * 1e3})
 
-    print(f"{n:>6d}  {t_lapack*1e3:18.3f}  {t_givens*1e3:18.3f}  "
-          f"{t_geqrf*1e3:12.3f}  {t_lapack/t_geqrf:12.2f}x  {t_givens/t_geqrf:12.2f}x")
+    print(f"{n:>6d}  {t_lapack*1e3:12.3f}  {t_house*1e3:17.3f}  "
+          f"{t_givens*1e3:12.3f}  {t_geqrf*1e3:12.3f}  "
+          f"{t_lapack/t_geqrf:12.2f}x  {t_house/t_geqrf:8.2f}x  "
+          f"{t_givens/t_geqrf:9.2f}x")
 
 # ---------------------------------------------------------------------------
 # Write CSV

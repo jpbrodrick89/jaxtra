@@ -637,11 +637,11 @@ def tpqrt(a: ArrayLike, b: ArrayLike, *,
 
   Note:
     On CPU this dispatches to LAPACK ``tpqrt``. On other platforms (or under
-    ``vmap``/``grad`` tracing) it falls back to a pure-JAX block-Givens
-    triangularisation that eliminates ``b`` against ``a`` one anti-diagonal
-    "wavefront" of independent rotations at a time. The Householder sign
-    convention of LAPACK and the Givens fallback differ, so individual rows of
-    ``R`` may differ by a unit-modulus phase; ``Rᴴ R`` is identical.
+    ``vmap``/``grad`` tracing) it falls back to a pure-JAX Householder
+    triangularisation that annihilates ``b`` one column at a time against the
+    triangular ``a`` (``n`` rank-1 updates). The sign/phase convention of the
+    reflectors may differ from LAPACK's, so individual rows of ``R`` may differ
+    by a unit-modulus phase; ``Rᴴ R`` is identical.
   """
   a_arr, b_arr = jnp.asarray(a), jnp.asarray(b)
   m, n = b_arr.shape[-2], b_arr.shape[-1]
@@ -671,6 +671,15 @@ def _tpqrt_shape_rule(a_shape, b_shape, *, l, nb):
   return a_shape
 
 
+def _tpqrt_pentagonal_mask(m, n, l, dtype):
+  """Boolean mask (as ``dtype``) of the pentagonal structure LAPACK tpqrt
+  assumes: the bottom ``l`` rows are upper trapezoidal
+  (``b[m - l + i, j] = 0`` for ``j < i``)."""
+  rows = jnp.arange(m)[:, None]
+  cols = jnp.arange(n)[None, :]
+  return ((rows < (m - l)) | (cols >= rows - (m - l))).astype(dtype)
+
+
 def _tpqrt_givens_2d(a, b, l):
   """Pure-JAX block-Givens triangularisation of ``[a; b]`` (unbatched).
 
@@ -687,14 +696,10 @@ def _tpqrt_givens_2d(a, b, l):
   is_complex = dtypes.issubdtype(dtype, np.complexfloating)
   conj = lax.conj if is_complex else (lambda x: x)
 
-  # Enforce the pentagonal structure that LAPACK tpqrt assumes: the bottom l
-  # rows are upper trapezoidal (b[m - l + i, j] = 0 for j < i). Masking the
+  # Enforce the pentagonal structure that LAPACK tpqrt assumes (masking the
   # structural-zero corner makes this fallback agree with LAPACK regardless of
-  # what the caller stored there.
-  rr = jnp.arange(m)[:, None]
-  cc = jnp.arange(n)[None, :]
-  penta_mask = (rr < (m - l)) | (cc >= rr - (m - l))
-  b = b * penta_mask.astype(dtype)
+  # what the caller stored there).
+  b = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
 
   # Pad R with a dummy trailing row (index n): inactive rotations scatter there
   # harmlessly. Active rotations at a step hit distinct rows, so no conflict.
@@ -737,9 +742,60 @@ def _tpqrt_givens_2d(a, b, l):
   return Rt[:n]
 
 
+def _tpqrt_householder_2d(a, b, l):
+  """Pure-JAX Householder triangularisation of ``[a; b]`` (unbatched).
+
+  The LAPACK-like fallback. Column ``j`` of the stack ``[a; b]`` has all of its
+  sub-diagonal mass in ``b`` (``a`` is already upper triangular), so a single
+  Householder reflector mixing the pivot row ``R[j, :]`` with the ``m`` rows of
+  ``b`` zeros ``b[:, j]``. Sweeping ``j = 0 .. n-1`` triangularises the stack in
+  ``n`` steps, each a dense rank-1 update — no gather/scatter, only a single
+  ``dynamic_update_slice`` for the pivot row.
+  """
+  n = a.shape[-1]
+  m = b.shape[-2]
+  dtype = a.dtype
+  is_complex = dtypes.issubdtype(dtype, np.complexfloating)
+  conj = lax.conj if is_complex else (lambda x: x)
+  real = lax.real if is_complex else (lambda x: x)
+
+  R = jnp.triu(a)
+  B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
+
+  def body(j, carry):
+    R, B = carry
+    alpha = R[j, j]                       # pivot
+    tail = B[:, j]                        # (m,) column to annihilate
+    xnorm2 = real(jnp.sum(conj(tail) * tail))
+    absalpha2 = real(conj(alpha) * alpha)
+    # Reflected pivot beta = -(alpha/|alpha|) * ||[alpha; tail]||. Carrying the
+    # phase of alpha (sign, for real types) is what makes the reflector zero
+    # the tail for complex inputs, not just real ones.
+    mu = jnp.sqrt(absalpha2 + xnorm2)
+    absalpha = jnp.sqrt(absalpha2)
+    phase = jnp.where(absalpha == 0, jnp.ones_like(alpha),
+                      alpha / absalpha.astype(dtype))
+    beta = -phase * mu.astype(dtype)
+    reflect = xnorm2 > 0                  # tail already zero => nothing to do
+    safe_beta = jnp.where(reflect, beta, jnp.ones_like(beta))
+    safe_den = jnp.where(reflect, alpha - beta, jnp.ones_like(beta))
+    # Reflector H = I - tau v vᴴ with v = [1; tail / (alpha - beta)].
+    tau = jnp.where(reflect, (safe_beta - alpha) / safe_beta,
+                    jnp.zeros_like(alpha))
+    v_tail = jnp.where(reflect, tail / safe_den, jnp.zeros_like(tail))
+    # vᴴ P over the stacked pivot row and B (columns < j are already zero).
+    vHP = R[j, :] + conj(v_tail) @ B
+    R = R.at[j].set(R[j, :] - tau * vHP)
+    B = B - tau * v_tail[:, None] * vHP[None, :]
+    return R, B
+
+  R, B = control_flow.fori_loop(0, n, body, (R, B))
+  return jnp.triu(R)
+
+
 def _tpqrt_lowering(a, b, *, l, nb):
   del nb  # block size only affects the LAPACK path's performance
-  f = partial(_tpqrt_givens_2d, l=l)
+  f = partial(_tpqrt_householder_2d, l=l)
   for _ in range(a.ndim - 2):
     f = jax.vmap(f)
   return f(a, b)
