@@ -285,4 +285,73 @@ template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ===========================================================================
+// TriangularPentagonalQr — LAPACK tpqrt (blocked triangular-pentagonal QR)
+// ===========================================================================
+
+template <ffi::DataType dtype>
+ffi::Error TriangularPentagonalQr<dtype>::Kernel(
+    ffi::Buffer<dtype> a, ffi::Buffer<dtype> b, int64_t l, int64_t nb,
+    ffi::ResultBuffer<dtype> r_out) {
+  // A is (..., n, n) upper triangular; B is (..., m, n) pentagonal.
+  auto a_dims_result = SplitBatch2D(a.dimensions());
+  if (a_dims_result.has_error()) return std::move(a_dims_result.error());
+  auto [a_batch, a_rows, n] = *a_dims_result;
+
+  auto b_dims_result = SplitBatch2D(b.dimensions());
+  if (b_dims_result.has_error()) return std::move(b_dims_result.error());
+  auto [b_batch, m, b_cols] = *b_dims_result;
+
+  FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n));
+  FFI_ASSIGN_OR_RETURN(auto m_v, MaybeCastNoOverflow<int>(m));
+  FFI_ASSIGN_OR_RETURN(auto l_v, MaybeCastNoOverflow<int>(l));
+  FFI_ASSIGN_OR_RETURN(auto nb_v, MaybeCastNoOverflow<int>(nb));
+
+  // LAPACK leading dimensions (column-major): A is n-by-n, B is m-by-n,
+  // T is nb-by-n.  WORK requires nb*n elements.
+  int lda_v = std::max(n_v, 1);
+  int ldb_v = std::max(m_v, 1);
+  int ldt_v = std::max(nb_v, 1);
+
+  // V (Householder reflectors) overwrites B and T (block reflector) are kept
+  // as internal scratch — we return only the triangular factor R.
+  std::vector<ValueType> b_work(static_cast<std::size_t>(m_v) * n_v);
+  std::vector<ValueType> t(static_cast<std::size_t>(ldt_v) * n_v);
+  std::vector<ValueType> work(static_cast<std::size_t>(nb_v) * n_v);
+
+  // Copy A -> r_out only when XLA allocated separate buffers; tpqrt overwrites
+  // A with R in place, so R is produced directly in r_out.
+  CopyIfDiffBuffer(a, r_out);
+
+  auto* a_data = r_out->typed_data();  // holds A on entry, R on exit
+  auto* b_data = b.typed_data();
+
+  const int64_t a_step = n * n;
+  const int64_t b_step = m * n;
+
+  for (int64_t batch = 0; batch < a_batch; ++batch) {
+    // Refresh the writable copy of B for this batch element (tpqrt overwrites
+    // B with the Householder vectors V).
+    std::copy_n(b_data, b_step, b_work.begin());
+
+    int info = 0;
+    fn(&m_v, &n_v, &l_v, &nb_v, a_data, &lda_v, b_work.data(), &ldb_v,
+       t.data(), &ldt_v, work.data(), &info);
+    // info != 0 only on an illegal argument; follow jaxlib's convention of
+    // not raising here.
+
+    a_data += a_step;
+    b_data += b_step;
+  }
+  return ffi::Error::Success();
+}
+
+// ---------------------------------------------------------------------------
+// Explicit instantiations — TriangularPentagonalQr
+// ---------------------------------------------------------------------------
+template struct TriangularPentagonalQr<ffi::DataType::F32>;
+template struct TriangularPentagonalQr<ffi::DataType::F64>;
+template struct TriangularPentagonalQr<ffi::DataType::C64>;
+template struct TriangularPentagonalQr<ffi::DataType::C128>;
+
 }  // namespace jaxtra

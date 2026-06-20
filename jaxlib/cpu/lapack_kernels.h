@@ -131,4 +131,43 @@ extern template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ---------------------------------------------------------------------------
+// TriangularPentagonalQr<dtype>
+// ---------------------------------------------------------------------------
+// Blocked QR factorization of a "triangular-pentagonal" matrix C = [A; B],
+// where A is an N-by-N upper triangular matrix and B is an M-by-N pentagonal
+// matrix (an (M-L)-by-N rectangular block on top of an L-by-N upper
+// trapezoidal block).  Uses LAPACK tpqrt.
+//
+// This is the structured QR update at the heart of a trust-region
+// Levenberg-Marquardt step: A is the triangular factor R of the Jacobian and
+// B is the diagonal regularisation (M=N, L=N).  The kernel returns only the
+// re-triangularised factor R (overwriting A); the Householder reflectors V
+// (overwriting B) and the block reflector T are kept as internal scratch.
+template <ffi::DataType dtype>
+struct TriangularPentagonalQr {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for [sdcz]tpqrt.
+  using FnType = void(int* /*m*/, int* /*n*/, int* /*l*/, int* /*nb*/,
+                      ValueType* /*a*/, int* /*lda*/, ValueType* /*b*/,
+                      int* /*ldb*/, ValueType* /*t*/, int* /*ldt*/,
+                      ValueType* /*work*/, int* /*info*/);
+
+  // Function pointer; nullptr until initialize() is called.
+  inline static FnType* fn = nullptr;
+
+  // Compute R = triu(qr([A; B])).  r_out is a copy of A on entry (aliased)
+  // and holds the N-by-N triangular factor R on exit.
+  static ffi::Error Kernel(ffi::Buffer<dtype> a, ffi::Buffer<dtype> b,
+                            int64_t l, int64_t nb,
+                            ffi::ResultBuffer<dtype> r_out);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct TriangularPentagonalQr<ffi::DataType::F32>;
+extern template struct TriangularPentagonalQr<ffi::DataType::F64>;
+extern template struct TriangularPentagonalQr<ffi::DataType::C64>;
+extern template struct TriangularPentagonalQr<ffi::DataType::C128>;
+
 }  // namespace jaxtra

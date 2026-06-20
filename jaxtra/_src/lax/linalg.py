@@ -5,6 +5,7 @@ from functools import partial
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 from jax import ffi as _jax_ffi
 from jax._src import core, dtypes
@@ -586,3 +587,179 @@ def _pentadiagonal_solveh_batching_rule(batched_args, batch_dims):
 
 batching.primitive_batchers[pentadiagonal_solveh_p] = (
     _pentadiagonal_solveh_batching_rule)
+
+
+# ---------------------------------------------------------------------------
+# Triangular-pentagonal QR (LAPACK tpqrt)
+# ---------------------------------------------------------------------------
+#
+# Computes the QR factorization of a "triangular-pentagonal" matrix
+#
+#       C = [ A ]      A : (n, n) upper triangular
+#           [ B ]      B : (m, n) pentagonal
+#
+# and returns only the re-triangularised factor R = triu(qr(C)), with shape
+# (n, n).  The pentagonal B is an (m - l)-by-n rectangular block on top of an
+# l-by-n upper trapezoidal block (B[m - l + i, j] = 0 for j < i).
+#
+# This is the structured QR update of a trust-region Levenberg-Marquardt step:
+# A is the triangular factor R of the Jacobian (from ``geqrf``) and B is the
+# diagonal regularisation D (m = n, l = n).  Re-triangularising [R; D] yields
+# the factor R̃ with R̃ᴴR̃ = RᴴR + DᴴD without forming the normal equations.
+
+
+def tpqrt(a: ArrayLike, b: ArrayLike, *,
+          l: int | None = None, nb: int | None = None) -> Array:
+  r"""Re-triangularises a triangular-pentagonal matrix via QR.
+
+  Computes ``R = triu(qr([a; b]))`` where ``a`` is an ``(n, n)`` upper
+  triangular matrix stacked on top of an ``(m, n)`` pentagonal matrix ``b``.
+  Mirrors the inputs of :obj:`scipy.linalg.lapack.dtpqrt` (``l``, ``nb``,
+  ``a``, ``b``) but returns only the triangular factor ``R``.
+
+  The canonical use is the trust-region Levenberg-Marquardt update: given the
+  triangular factor ``R`` of a Jacobian and a diagonal regularisation ``D``
+  (passed as a dense ``(n, n)`` diagonal ``b`` with ``l = n``), this returns
+  the factor ``R̃`` satisfying ``R̃ᴴ R̃ = Rᴴ R + Dᴴ D``.
+
+  Args:
+    a: ``(..., n, n)`` upper triangular matrix. The strictly lower triangle is
+      ignored.
+    b: ``(..., m, n)`` pentagonal matrix — an ``(m - l)``-by-``n`` rectangular
+      block on top of an ``l``-by-``n`` upper trapezoidal block.
+    l: Number of rows of the upper trapezoidal part of ``b``
+      (``0 <= l <= min(m, n)``). Defaults to ``min(m, n)``.
+    nb: LAPACK block size used on the CPU path (``1 <= nb <= n``). Defaults to
+      ``min(n, 32)``. Has no effect on the result, only on CPU performance.
+
+  Returns:
+    The ``(..., n, n)`` upper triangular factor ``R``.
+
+  Note:
+    On CPU this dispatches to LAPACK ``tpqrt``. On other platforms (or under
+    ``vmap``/``grad`` tracing) it falls back to a pure-JAX block-Givens
+    triangularisation that eliminates ``b`` against ``a`` one anti-diagonal
+    "wavefront" of independent rotations at a time. The Householder sign
+    convention of LAPACK and the Givens fallback differ, so individual rows of
+    ``R`` may differ by a unit-modulus phase; ``Rᴴ R`` is identical.
+  """
+  a_arr, b_arr = jnp.asarray(a), jnp.asarray(b)
+  m, n = b_arr.shape[-2], b_arr.shape[-1]
+  if l is None:
+    l = min(m, n)
+  if nb is None:
+    nb = max(1, min(n, 32))
+  a, b = core.standard_insert_pvary(a_arr, b_arr)
+  return tpqrt_p.bind(a, b, l=int(l), nb=int(nb))
+
+
+def _tpqrt_shape_rule(a_shape, b_shape, *, l, nb):
+  if len(a_shape) != 2 or a_shape[0] != a_shape[1]:
+    raise ValueError(
+        f"tpqrt requires a square upper-triangular matrix a, got {a_shape}.")
+  n = a_shape[1]
+  m = b_shape[0]
+  if b_shape[1] != n:
+    raise ValueError(
+        "tpqrt requires b to have the same number of columns as a; "
+        f"got a shape {a_shape} and b shape {b_shape}.")
+  if not 0 <= l <= min(m, n):
+    raise ValueError(
+        f"tpqrt requires 0 <= l <= min(m, n); got l={l}, m={m}, n={n}.")
+  if n > 0 and not 1 <= nb <= n:
+    raise ValueError(f"tpqrt requires 1 <= nb <= n; got nb={nb}, n={n}.")
+  return a_shape
+
+
+def _tpqrt_givens_2d(a, b, l):
+  """Pure-JAX block-Givens triangularisation of ``[a; b]`` (unbatched).
+
+  Eliminates the pentagonal block ``b`` (``m`` "ghost" rows) into the upper
+  triangular ``a`` (``n`` rows). Rotation ``(r, j)`` — zeroing ``b[r, j]``
+  against pivot ``R[j, j]`` — depends only on ``(r - 1, j)`` and ``(r, j-1)``,
+  so all rotations on the anti-diagonal ``r + j = t`` are independent. We sweep
+  ``t = 0 .. m + n - 2`` (the "append ``n-1`` zeros" staggering of the ``m``
+  ghost rows), applying one block of independent rotations per step.
+  """
+  n = a.shape[-1]
+  m = b.shape[-2]
+  dtype = a.dtype
+  is_complex = dtypes.issubdtype(dtype, np.complexfloating)
+  conj = lax.conj if is_complex else (lambda x: x)
+
+  # Enforce the pentagonal structure that LAPACK tpqrt assumes: the bottom l
+  # rows are upper trapezoidal (b[m - l + i, j] = 0 for j < i). Masking the
+  # structural-zero corner makes this fallback agree with LAPACK regardless of
+  # what the caller stored there.
+  rr = jnp.arange(m)[:, None]
+  cc = jnp.arange(n)[None, :]
+  penta_mask = (rr < (m - l)) | (cc >= rr - (m - l))
+  b = b * penta_mask.astype(dtype)
+
+  # Pad R with a dummy trailing row (index n): inactive rotations scatter there
+  # harmlessly. Active rotations at a step hit distinct rows, so no conflict.
+  Rt = jnp.concatenate([jnp.triu(a), jnp.zeros((1, n), dtype)], axis=0)
+  W = b  # ghost rows, (m, n)
+  rows = jnp.arange(m)
+
+  def step(t, carry):
+    Rt, W = carry
+    jj_raw = t - rows                            # pivot row/col per ghost row
+    valid = (jj_raw >= 0) & (jj_raw < n)
+    jj = jnp.where(valid, jj_raw, n)             # clamp inactive -> dummy row
+    col = jnp.where(valid, jj_raw, 0)            # clamp inactive -> col 0
+    Rj = Rt[jj]                                  # (m, n) pivot rows
+    piv_R = Rj[rows, col]                        # R[j, j]
+    piv_W = W[rows, col]                         # b[r, j]
+    absf = jnp.abs(piv_R)
+    absg = jnp.abs(piv_W)
+    r = jnp.sqrt(absf * absf + absg * absg)
+    active = valid & (absg != 0)                 # nothing to zero otherwise
+    safe_r = jnp.where(r == 0, 1, r)
+    safe_absf = jnp.where(absf == 0, 1, absf)
+    # Unit phase of the pivot (sign for real types); gives a real cosine.
+    phase = jnp.where(absf == 0, jnp.ones_like(piv_R),
+                      piv_R / safe_absf.astype(dtype))
+    c = jnp.where(active, absf / safe_r, 1.0).astype(dtype)
+    s = jnp.where(active, phase * conj(piv_W) / safe_r.astype(dtype),
+                  jnp.zeros_like(piv_W))
+    # Unitary rotation G = [[c, s], [-conj(s), c]] zeroing piv_W against piv_R
+    # (for real types conj is the identity, recovering the usual Givens form).
+    newRj = c[:, None] * Rj + s[:, None] * W
+    newWi = -conj(s)[:, None] * Rj + c[:, None] * W
+    keep = active[:, None]
+    Rt = Rt.at[jj].set(jnp.where(keep, newRj, Rj))
+    W = jnp.where(keep, newWi, W)
+    return Rt, W
+
+  nsteps = max(m + n - 1, 0)
+  Rt, W = control_flow.fori_loop(0, nsteps, step, (Rt, W))
+  return Rt[:n]
+
+
+def _tpqrt_lowering(a, b, *, l, nb):
+  del nb  # block size only affects the LAPACK path's performance
+  f = partial(_tpqrt_givens_2d, l=l)
+  for _ in range(a.ndim - 2):
+    f = jax.vmap(f)
+  return f(a, b)
+
+
+def _tpqrt_cpu_lowering(ctx, a, b, *, l, nb):
+  a_aval = ctx.avals_in[0]
+  target_name = lapack.prepare_lapack_call("tpqrt_ffi", a_aval.dtype)
+  rule = _linalg_ffi_lowering(target_name, operand_output_aliases={0: 0})
+  return rule(ctx, a, b, l=l, nb=nb)
+
+
+tpqrt_p = standard_linalg_primitive(
+    (_float | _complex, _float | _complex), (2, 2),
+    _tpqrt_shape_rule, "tpqrt")
+
+# Pure-JAX block-Givens fallback (all platforms without a registered FFI
+# target, plus vmap/grad tracing).
+mlir.register_lowering(tpqrt_p, mlir.lower_fun(
+    _tpqrt_lowering, multiple_results=False))
+
+# CPU lowering via LAPACK tpqrt.
+mlir.register_lowering(tpqrt_p, _tpqrt_cpu_lowering, platform='cpu')

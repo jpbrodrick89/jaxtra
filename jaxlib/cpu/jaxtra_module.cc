@@ -86,11 +86,29 @@ JAXTRA_CPU_DEFINE_PBSV(lapack_cpbsv_ffi, ffi::DataType::C64);
 JAXTRA_CPU_DEFINE_PBSV(lapack_zpbsv_ffi, ffi::DataType::C128);
 
 // ---------------------------------------------------------------------------
+// Handler macro for triangular-pentagonal QR (LAPACK tpqrt).
+// ---------------------------------------------------------------------------
+#define JAXTRA_CPU_DEFINE_TPQRT(name, dtype)                     \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                  \
+      name, TriangularPentagonalQr<dtype>::Kernel,                \
+      ffi::Ffi::Bind()                                            \
+          .Arg<ffi::Buffer<dtype>>() /* a */                      \
+          .Arg<ffi::Buffer<dtype>>() /* b */                      \
+          .Attr<int64_t>("l")                                     \
+          .Attr<int64_t>("nb")                                    \
+          .Ret<ffi::Buffer<dtype>>()) /* r (a_out) */
+
+JAXTRA_CPU_DEFINE_TPQRT(lapack_stpqrt_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_TPQRT(lapack_dtpqrt_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_TPQRT(lapack_ctpqrt_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_TPQRT(lapack_ztpqrt_ffi, ffi::DataType::C128);
+
+// ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
 NB_MODULE(_jaxtra, m) {
-  m.doc() = "jaxtra C extension: LAPACK ORMQR and GBSV via XLA FFI";
+  m.doc() = "jaxtra C extension: LAPACK ORMQR, GBSV, PBSV and TPQRT via XLA FFI";
 
   // initialize() — mirrors jaxlib's GetLapackKernelsFromScipy().
   // Imports scipy.linalg.cython_lapack, extracts raw function pointers from
@@ -115,6 +133,10 @@ NB_MODULE(_jaxtra, m) {
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::F64>>(lapack_ptr("dpbsv"));
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C64>>(lapack_ptr("cpbsv"));
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C128>>(lapack_ptr("zpbsv"));
+    AssignKernelFn<TriangularPentagonalQr<ffi::DataType::F32>>(lapack_ptr("stpqrt"));
+    AssignKernelFn<TriangularPentagonalQr<ffi::DataType::F64>>(lapack_ptr("dtpqrt"));
+    AssignKernelFn<TriangularPentagonalQr<ffi::DataType::C64>>(lapack_ptr("ctpqrt"));
+    AssignKernelFn<TriangularPentagonalQr<ffi::DataType::C128>>(lapack_ptr("ztpqrt"));
   });
 
   // registrations() — returns {platform: [(name, capsule, api_version)]}
@@ -140,6 +162,10 @@ NB_MODULE(_jaxtra, m) {
     make_entry("lapack_dpbsv_ffi",  reinterpret_cast<void*>(lapack_dpbsv_ffi));
     make_entry("lapack_cpbsv_ffi",  reinterpret_cast<void*>(lapack_cpbsv_ffi));
     make_entry("lapack_zpbsv_ffi",  reinterpret_cast<void*>(lapack_zpbsv_ffi));
+    make_entry("lapack_stpqrt_ffi", reinterpret_cast<void*>(lapack_stpqrt_ffi));
+    make_entry("lapack_dtpqrt_ffi", reinterpret_cast<void*>(lapack_dtpqrt_ffi));
+    make_entry("lapack_ctpqrt_ffi", reinterpret_cast<void*>(lapack_ctpqrt_ffi));
+    make_entry("lapack_ztpqrt_ffi", reinterpret_cast<void*>(lapack_ztpqrt_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });

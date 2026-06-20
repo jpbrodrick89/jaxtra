@@ -42,3 +42,4 @@ in this module are not guaranteed to support automatic differentiation.
    :toctree: _autosummary
 
    ormqr
+   tpqrt
