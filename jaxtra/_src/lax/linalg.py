@@ -773,9 +773,9 @@ def _tpqrt_householder_2d(a, b, l):
   The unblocked LAPACK-like fallback. Column ``j`` of the stack ``[a; b]`` has
   all of its sub-diagonal mass in ``b`` (``a`` is already upper triangular), so
   a single Householder reflector mixing the pivot row ``R[j, :]`` with the ``m``
-  rows of ``b`` zeros ``b[:, j]``. Sweeping ``j = 0 .. n-1`` triangularises the
-  stack in ``n`` steps, each a dense rank-1 update — no gather/scatter, only a
-  single ``dynamic_update_slice`` for the pivot row.
+  rows of ``b`` zeros ``b[:, j]``. We ``scan`` over the columns, carrying ``B``
+  and *emitting* each finished row of ``R`` — XLA stacks the outputs, so no
+  explicit row scatter is needed.
   """
   n = a.shape[-1]
   m = b.shape[-2]
@@ -787,16 +787,15 @@ def _tpqrt_householder_2d(a, b, l):
   R = jnp.triu(a)
   B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
 
-  def body(j, carry):
-    R, B = carry
-    tau, v_tail = _tpqrt_reflector(R[j, j], B[:, j], conj, real)
+  def body(B, xs):
+    j, r_row = xs                          # r_row = original R[j, :]
+    tau, v_tail = _tpqrt_reflector(r_row[j], B[:, j], conj, real)
     # vᴴ P over the stacked pivot row and B (columns < j are already zero).
-    vHP = R[j, :] + conj(v_tail) @ B
-    R = R.at[j].set(R[j, :] - tau * vHP)
+    vHP = r_row + conj(v_tail) @ B
     B = B - tau * v_tail[:, None] * vHP[None, :]
-    return R, B
+    return B, r_row - tau * vHP
 
-  R, B = control_flow.fori_loop(0, n, body, (R, B))
+  _, R = jax.lax.scan(body, B, (jnp.arange(n), R))
   return jnp.triu(R)
 
 
@@ -817,7 +816,7 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
   The dense trailing update is what closes the gap to ``geqrf`` at large ``n``.
   The panel loop is a Python loop (the panel count is static), so all offsets
   and slice widths are statically known — no padding, masking, or dynamic
-  slicing. Only the within-panel work is a ``fori_loop`` (over small fixed-size
+  slicing. Only the within-panel work is a ``scan`` (over small fixed-size
   blocks), keeping the traced graph ``O(n / nb)`` rather than ``O(n)``.
   """
   n = a.shape[-1]
@@ -837,30 +836,28 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
     Bp = B[:, p:p + pb]                        # panel columns of B (m x pb)
     iota = jnp.arange(pb)
 
-    # 1. Unblocked factorisation of the panel; collect V_B and tau.
-    def col_body(jl, c):
-      Rpp, Bp, Vb, Tau = c
-      tau, u = _tpqrt_reflector(Rpp[jl, jl], Bp[:, jl], conj, real)
-      Vb = Vb.at[:, jl].set(u)
-      Tau = Tau.at[jl].set(tau)
-      vHP = Rpp[jl, :] + conj(u) @ Bp          # within-panel only (pb,)
-      Rpp = Rpp.at[jl, :].set(Rpp[jl, :] - tau * vHP)
+    # 1. Unblocked factorisation of the panel: scan over panel columns,
+    #    emitting each finished R row, the reflector tail and tau.
+    def col_body(Bp, xs):
+      jl, rpp_row = xs
+      tau, u = _tpqrt_reflector(rpp_row[jl], Bp[:, jl], conj, real)
+      vHP = rpp_row + conj(u) @ Bp              # within-panel only (pb,)
       Bp = Bp - tau * u[:, None] * vHP[None, :]
-      return Rpp, Bp, Vb, Tau
+      return Bp, (rpp_row - tau * vHP, u, tau)
 
-    Rpp, Bp, Vb, Tau = control_flow.fori_loop(
-        0, pb, col_body,
-        (Rpp, Bp, jnp.zeros((m, pb), dtype), jnp.zeros((pb,), dtype)))
+    Bp, (Rpp, Vb_rows, Tau) = jax.lax.scan(col_body, Bp, (iota, Rpp))
+    Vb = Vb_rows.T                              # (m, pb) reflector tails
 
     # 2. Triangular factor T of the block reflector (T[i, j], i <= j).
-    def t_body(j, T):
-      x = (conj(Vb).T @ Vb[:, j]) * (iota < j)  # V_Bᴴ v_j, masked to i < j
+    def t_body(T, xs):
+      j, vj = xs
+      x = (conj(Vb).T @ vj) * (iota < j)        # V_Bᴴ v_j, masked to i < j
       col = -Tau[j] * (T @ x)                    # rows >= j vanish (T upper-▲)
       col = jnp.where(iota == j, Tau[j],
                       jnp.where(iota < j, col, jnp.zeros_like(col)))
-      return T.at[:, j].set(col)
+      return T.at[:, j].set(col), None
 
-    T = control_flow.fori_loop(0, pb, t_body, jnp.zeros((pb, pb), dtype))
+    T, _ = jax.lax.scan(t_body, jnp.zeros((pb, pb), dtype), (iota, Vb.T))
     R = R.at[p:p + pb, p:p + pb].set(Rpp)
 
     # 3. BLAS-3 trailing update: Qᴴ = I - V Tᴴ Vᴴ on columns [p + pb:].
