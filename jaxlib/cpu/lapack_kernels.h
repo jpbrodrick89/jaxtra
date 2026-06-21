@@ -157,11 +157,15 @@ struct TriangularPentagonalQr {
   // Function pointer; nullptr until initialize() is called.
   inline static FnType* fn = nullptr;
 
-  // Compute R = triu(qr([A; B])).  r_out is a copy of A on entry (aliased)
-  // and holds the N-by-N triangular factor R on exit.
+  // Blocked triangular-pentagonal QR of C = [A; B].  Mirrors LAPACK tpqrt's
+  // outputs: r_out holds the N-by-N upper triangular factor R (overwriting A),
+  // v_out holds the M-by-N Householder reflectors V (overwriting B), and t_out
+  // holds the NB-by-N block reflector factors T.
   static ffi::Error Kernel(ffi::Buffer<dtype> a, ffi::Buffer<dtype> b,
                             int64_t l, int64_t nb,
-                            ffi::ResultBuffer<dtype> r_out);
+                            ffi::ResultBuffer<dtype> r_out,
+                            ffi::ResultBuffer<dtype> v_out,
+                            ffi::ResultBuffer<dtype> t_out);
 };
 
 // Explicit instantiation declarations (definitions in lapack_kernels.cc).

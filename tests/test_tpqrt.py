@@ -1,7 +1,9 @@
 """Tests for jaxtra — tpqrt (triangular-pentagonal QR) primitive.
 
-Covers the LAPACK CPU path and the pure-JAX block-Givens fallback against a
-``geqrf``-based reference, across dtypes, pentagonal shapes, jit and vmap.
+Covers the LAPACK CPU path (``R, V, T`` checked bit-for-bit against SciPy) and
+the pure-JAX blocked-Householder fallback (checked by reconstructing
+``C = Q [R; 0]`` from the returned reflectors), across dtypes, pentagonal
+shapes, block sizes, jit, vmap and batching.
 """
 
 import numpy as np
@@ -11,26 +13,22 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
+import scipy.linalg.lapack as scipy_lapack
 from jax._src.lax.linalg import geqrf
-from jaxtra._src.lax.linalg import (
-    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d,
-    _tpqrt_blocked_householder_2d)
-
-# Pure-JAX fallbacks, each callable as fallback(a, b, l). The blocked
-# Householder is exercised at a few block sizes (incl. nb=1 and nb > n).
-FALLBACKS = {
-    "givens": _tpqrt_givens_2d,
-    "householder": _tpqrt_householder_2d,
-    "blocked_nb1": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 1),
-    "blocked_nb3": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 3),
-    "blocked_nb64": lambda a, b, l: _tpqrt_blocked_householder_2d(a, b, l, 64),
-}
+from jaxtra._src.lax.linalg import tpqrt, _tpqrt_blocked_householder_2d
 
 RNG = np.random.default_rng(42)
 
 float_types = [np.float32, np.float64]
 complex_types = [np.complex64, np.complex128]
 all_dtypes = float_types + complex_types
+
+_SCIPY_TPQRT = {
+    np.dtype(np.float32): scipy_lapack.stpqrt,
+    np.dtype(np.float64): scipy_lapack.dtpqrt,
+    np.dtype(np.complex64): scipy_lapack.ctpqrt,
+    np.dtype(np.complex128): scipy_lapack.ztpqrt,
+}
 
 
 def rand(shape, dtype):
@@ -64,6 +62,24 @@ def reference_R(a, b):
     return jnp.triu(Rfac[..., :n, :])
 
 
+def reconstruct(a, R, V, T, nb):
+    """Reapply Q = Q_0 ... Q_{P-1} from (V, T) to ``[R; 0]`` and return the
+    full ``(n + m, n)`` matrix, which must equal the input stack ``[triu(a);
+    B]``. Verifies the reflectors regardless of sign/phase convention."""
+    R, V, T = np.asarray(R), np.asarray(V), np.asarray(T)
+    n, m = R.shape[0], V.shape[0]
+    M = np.vstack([np.triu(R), np.zeros((m, n), R.dtype)])
+    for p in reversed(range(0, n, nb)):       # apply rightmost panel first
+        pb = min(nb, n - p)
+        Vp, Tp = V[:, p:p + pb], T[:pb, p:p + pb]
+        top, bot = M[:n], M[n:]
+        tmp = Tp @ (top[p:p + pb] + Vp.conj().T @ bot)
+        top = top.copy()
+        top[p:p + pb] -= tmp
+        M = np.vstack([top, bot - Vp @ tmp])
+    return M
+
+
 def tol_for(dtype):
     return {np.float32: 1e-4, np.complex64: 1e-4,
             np.float64: 1e-10, np.complex128: 1e-10}[dtype]
@@ -83,27 +99,46 @@ TPQRT_CASES = [
 
 @pytest.mark.parametrize("dtype", all_dtypes)
 @pytest.mark.parametrize("m,n,l", TPQRT_CASES)
-def test_tpqrt_lapack(m, n, l, dtype):
+def test_tpqrt_matches_scipy(m, n, l, dtype):
+    """The CPU (LAPACK FFI) path returns R, V, T bit-for-bit like SciPy."""
+    nb = 3
     a, b = make_pentagonal(m, n, l, dtype)
-    R = tpqrt(a, b, l=l)
-    expected = reference_R(a, b)
+    R, V, T = tpqrt(a, b, l=l, nb=nb)
+    a_s, b_s, t_s, info = _SCIPY_TPQRT[np.dtype(dtype)](
+        l, nb, np.asarray(a, order="F"), np.asarray(b, order="F"))
     tol = tol_for(dtype)
-    np.testing.assert_allclose(gram(R), gram(expected), rtol=tol, atol=tol)
-    # R must be upper triangular.
+    np.testing.assert_allclose(jnp.triu(R), np.triu(a_s), rtol=tol, atol=tol)
+    np.testing.assert_allclose(V, b_s, rtol=tol, atol=tol)
+    np.testing.assert_allclose(T, t_s, rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("dtype", all_dtypes)
+@pytest.mark.parametrize("m,n,l", TPQRT_CASES)
+def test_tpqrt_factor(m, n, l, dtype):
+    """R is upper triangular with the right Gram, for the CPU path."""
+    a, b = make_pentagonal(m, n, l, dtype)
+    R, V, T = tpqrt(a, b, l=l)
+    tol = tol_for(dtype)
+    np.testing.assert_allclose(gram(R), gram(reference_R(a, b)),
+                               rtol=tol, atol=tol)
     np.testing.assert_allclose(R, jnp.triu(R), rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
 @pytest.mark.parametrize("m,n,l", TPQRT_CASES)
-@pytest.mark.parametrize("fallback", list(FALLBACKS.values()),
-                         ids=list(FALLBACKS))
-def test_tpqrt_fallback(fallback, m, n, l, dtype):
+@pytest.mark.parametrize("nb", [1, 3, 64])
+def test_tpqrt_fallback_reconstructs(m, n, l, nb, dtype):
+    """The pure-JAX fallback's (R, V, T) reproduces C = Q [R; 0]."""
+    nb = min(nb, n)
     a, b = make_pentagonal(m, n, l, dtype)
-    R = fallback(a, b, l)
-    expected = reference_R(a, b)
+    R, V, T = _tpqrt_blocked_householder_2d(a, b, l, nb)
+    C = np.vstack([np.triu(np.asarray(a)), np.asarray(b)])
     tol = tol_for(dtype)
-    np.testing.assert_allclose(gram(R), gram(expected), rtol=tol, atol=tol)
-    np.testing.assert_allclose(R, jnp.triu(R), rtol=tol, atol=tol)
+    np.testing.assert_allclose(reconstruct(a, R, V, T, nb), C,
+                               rtol=tol, atol=tol)
+    # R is upper triangular with the right Gram.
+    np.testing.assert_allclose(gram(R), gram(reference_R(a, b)),
+                               rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
@@ -113,10 +148,9 @@ def test_tpqrt_lm_identity(dtype):
     R = jnp.triu(jnp.asarray(rand((n, n), dtype)))
     d = jnp.asarray(rand((n,), dtype))
     D = jnp.diag(d)
-    Rt = tpqrt(R, D, l=n)
-    expected = gram(R) + gram(D)
+    Rt, _, _ = tpqrt(R, D, l=n)
     tol = tol_for(dtype)
-    np.testing.assert_allclose(gram(Rt), expected, rtol=tol, atol=tol)
+    np.testing.assert_allclose(gram(Rt), gram(R) + gram(D), rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
@@ -126,7 +160,8 @@ def test_tpqrt_jit(dtype):
     eager = tpqrt(a, b, l=l)
     jitted = jax.jit(lambda a, b: tpqrt(a, b, l=l))(a, b)
     tol = tol_for(dtype)
-    np.testing.assert_allclose(jitted, eager, rtol=tol, atol=tol)
+    for e, j in zip(eager, jitted):
+        np.testing.assert_allclose(j, e, rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
@@ -138,10 +173,11 @@ def test_tpqrt_batched(dtype):
     cols = jnp.arange(n)[None, :]
     b = b_rows * ((rows < (m - l)) | (cols >= rows - (m - l))).astype(dtype)
 
-    R = tpqrt(a, b, l=l)
+    R, V, T = tpqrt(a, b, l=l)
     expected = jax.vmap(reference_R)(a, b)
     tol = tol_for(dtype)
     np.testing.assert_allclose(gram(R), gram(expected), rtol=tol, atol=tol)
+    assert R.shape == (batch, n, n) and V.shape == (batch, m, n)
 
 
 @pytest.mark.parametrize("dtype", all_dtypes)
@@ -150,26 +186,12 @@ def test_tpqrt_vmap(dtype):
     a = jnp.triu(jnp.asarray(rand((batch, n, n), dtype)))
     b = jax.vmap(jnp.diag)(jnp.asarray(rand((batch, n), dtype)))
 
-    out = jax.vmap(lambda a, b: tpqrt(a, b, l=l))(a, b)
+    Rs, _, _ = jax.vmap(lambda a, b: tpqrt(a, b, l=l))(a, b)
     expected = jax.vmap(reference_R)(a, b)
     tol = tol_for(dtype)
     for i in range(batch):
-        np.testing.assert_allclose(gram(out[i]), gram(expected[i]),
+        np.testing.assert_allclose(gram(Rs[i]), gram(expected[i]),
                                    rtol=tol, atol=tol)
-
-
-@pytest.mark.parametrize("dtype", all_dtypes)
-@pytest.mark.parametrize("fallback", list(FALLBACKS.values()),
-                         ids=list(FALLBACKS))
-def test_tpqrt_lapack_matches_fallback(fallback, dtype):
-    """The CPU LAPACK path and each pure-JAX fallback agree (Gram-invariant)."""
-    m, n, l = 9, 6, 4
-    a, b = make_pentagonal(m, n, l, dtype)
-    R_lapack = tpqrt(a, b, l=l)
-    R_fallback = fallback(a, b, l)
-    tol = tol_for(dtype)
-    np.testing.assert_allclose(gram(R_lapack), gram(R_fallback),
-                               rtol=tol, atol=tol)
 
 
 def test_tpqrt_shape_errors():

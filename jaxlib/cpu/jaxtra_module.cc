@@ -96,7 +96,9 @@ JAXTRA_CPU_DEFINE_PBSV(lapack_zpbsv_ffi, ffi::DataType::C128);
           .Arg<ffi::Buffer<dtype>>() /* b */                      \
           .Attr<int64_t>("l")                                     \
           .Attr<int64_t>("nb")                                    \
-          .Ret<ffi::Buffer<dtype>>()) /* r (a_out) */
+          .Ret<ffi::Buffer<dtype>>()  /* r = R   (a_out) */       \
+          .Ret<ffi::Buffer<dtype>>()  /* v = V   (b_out) */       \
+          .Ret<ffi::Buffer<dtype>>()) /* t = T            */
 
 JAXTRA_CPU_DEFINE_TPQRT(lapack_stpqrt_ffi, ffi::DataType::F32);
 JAXTRA_CPU_DEFINE_TPQRT(lapack_dtpqrt_ffi, ffi::DataType::F64);

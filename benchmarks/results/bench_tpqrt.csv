@@ -1,36 +1,22 @@
 n,method,time_ms
-16,jaxtra tpqrt (LAPACK),0.021184499985338334
-16,jaxtra tpqrt (blocked HH),0.07015000002752458
-16,jaxtra tpqrt (unblocked HH),0.06594000001314271
-16,jaxtra tpqrt (Givens),0.06593550000388859
-16,raw geqrf,0.021137999993925405
-32,jaxtra tpqrt (LAPACK),0.05738900000551439
-32,jaxtra tpqrt (blocked HH),0.10531899997090477
-32,jaxtra tpqrt (unblocked HH),0.10618149997299042
-32,jaxtra tpqrt (Givens),0.11215699998956552
-32,raw geqrf,0.08469849996117773
-64,jaxtra tpqrt (LAPACK),0.16139699999939694
-64,jaxtra tpqrt (blocked HH),0.33509249999497115
-64,jaxtra tpqrt (unblocked HH),0.19478149999940797
-64,jaxtra tpqrt (Givens),0.40996850000851737
-64,raw geqrf,0.15032300001394105
-128,jaxtra tpqrt (LAPACK),0.4432204999886835
-128,jaxtra tpqrt (blocked HH),0.9319740000250931
-128,jaxtra tpqrt (unblocked HH),0.7482309999886638
-128,jaxtra tpqrt (Givens),2.0762714999875698
-128,raw geqrf,1.0539429999880667
-256,jaxtra tpqrt (LAPACK),1.9968974999926559
-256,jaxtra tpqrt (blocked HH),6.302565500021728
-256,jaxtra tpqrt (unblocked HH),10.210260999997445
-256,jaxtra tpqrt (Givens),47.63522350000926
-256,raw geqrf,3.982710999991923
-512,jaxtra tpqrt (LAPACK),9.761253999982955
-512,jaxtra tpqrt (blocked HH),33.165360499964436
-512,jaxtra tpqrt (unblocked HH),92.97422150001466
-512,jaxtra tpqrt (Givens),218.6956715000008
-512,raw geqrf,15.83486199999129
-1024,jaxtra tpqrt (LAPACK),31.738675000013927
-1024,jaxtra tpqrt (blocked HH),134.49664899999902
-1024,jaxtra tpqrt (unblocked HH),536.4645180000025
-1024,jaxtra tpqrt (Givens),2349.752340000009
-1024,raw geqrf,89.21972800001754
+16,jaxtra tpqrt (LAPACK FFI),0.025743000037437014
+16,jaxtra tpqrt (blocked HH),0.11615900007200253
+16,raw geqrf,0.01921750003930356
+32,jaxtra tpqrt (LAPACK FFI),0.10018149998813897
+32,jaxtra tpqrt (blocked HH),0.14871349992517935
+32,raw geqrf,0.029594000011456956
+64,jaxtra tpqrt (LAPACK FFI),11.935186500068085
+64,jaxtra tpqrt (blocked HH),0.3591039999264467
+64,raw geqrf,0.10411999994630605
+128,jaxtra tpqrt (LAPACK FFI),0.4965979999269621
+128,jaxtra tpqrt (blocked HH),1.0555960000147024
+128,raw geqrf,2.9569920000085403
+256,jaxtra tpqrt (LAPACK FFI),4.410331000030965
+256,jaxtra tpqrt (blocked HH),7.749122500058547
+256,raw geqrf,41.629690500144534
+512,jaxtra tpqrt (LAPACK FFI),30.832484500024293
+512,jaxtra tpqrt (blocked HH),37.35835000009047
+512,raw geqrf,88.97182199996223
+1024,jaxtra tpqrt (LAPACK FFI),141.12845249997008
+1024,jaxtra tpqrt (blocked HH),241.83898699993733
+1024,raw geqrf,376.8579750000072

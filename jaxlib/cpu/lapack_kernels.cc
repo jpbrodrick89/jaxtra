@@ -292,7 +292,8 @@ template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 template <ffi::DataType dtype>
 ffi::Error TriangularPentagonalQr<dtype>::Kernel(
     ffi::Buffer<dtype> a, ffi::Buffer<dtype> b, int64_t l, int64_t nb,
-    ffi::ResultBuffer<dtype> r_out) {
+    ffi::ResultBuffer<dtype> r_out, ffi::ResultBuffer<dtype> v_out,
+    ffi::ResultBuffer<dtype> t_out) {
   // A is (..., n, n) upper triangular; B is (..., m, n) pentagonal.
   auto a_dims_result = SplitBatch2D(a.dimensions());
   if (a_dims_result.has_error()) return std::move(a_dims_result.error());
@@ -313,35 +314,36 @@ ffi::Error TriangularPentagonalQr<dtype>::Kernel(
   int ldb_v = std::max(m_v, 1);
   int ldt_v = std::max(nb_v, 1);
 
-  // V (Householder reflectors) overwrites B and T (block reflector) are kept
-  // as internal scratch — we return only the triangular factor R.
-  std::vector<ValueType> b_work(static_cast<std::size_t>(m_v) * n_v);
-  std::vector<ValueType> t(static_cast<std::size_t>(ldt_v) * n_v);
   std::vector<ValueType> work(static_cast<std::size_t>(nb_v) * n_v);
 
-  // Copy A -> r_out only when XLA allocated separate buffers; tpqrt overwrites
-  // A with R in place, so R is produced directly in r_out.
+  // tpqrt overwrites A->R (in r_out) and B->V (in v_out), and writes the block
+  // reflector factors T (in t_out).  Copy inputs into the aliased output
+  // buffers only when XLA allocated separate storage.
   CopyIfDiffBuffer(a, r_out);
+  CopyIfDiffBuffer(b, v_out);
 
-  auto* a_data = r_out->typed_data();  // holds A on entry, R on exit
-  auto* b_data = b.typed_data();
+  auto* r_data = r_out->typed_data();   // A on entry, R on exit
+  auto* v_data = v_out->typed_data();   // B on entry, V on exit
+  auto* t_data = t_out->typed_data();   // T on exit
 
-  const int64_t a_step = n * n;
-  const int64_t b_step = m * n;
+  const int64_t r_step = n * n;
+  const int64_t v_step = m * n;
+  const int64_t t_step = static_cast<int64_t>(ldt_v) * n_v;
 
   for (int64_t batch = 0; batch < a_batch; ++batch) {
-    // Refresh the writable copy of B for this batch element (tpqrt overwrites
-    // B with the Householder vectors V).
-    std::copy_n(b_data, b_step, b_work.begin());
+    // Zero T so the unreferenced (sub-diagonal / partial-panel) entries are
+    // deterministic across batch elements and platforms.
+    std::fill_n(t_data, t_step, ValueType{0});
 
     int info = 0;
-    fn(&m_v, &n_v, &l_v, &nb_v, a_data, &lda_v, b_work.data(), &ldb_v,
-       t.data(), &ldt_v, work.data(), &info);
+    fn(&m_v, &n_v, &l_v, &nb_v, r_data, &lda_v, v_data, &ldb_v,
+       t_data, &ldt_v, work.data(), &info);
     // info != 0 only on an illegal argument; follow jaxlib's convention of
     // not raising here.
 
-    a_data += a_step;
-    b_data += b_step;
+    r_data += r_step;
+    v_data += v_step;
+    t_data += t_step;
   }
   return ffi::Error::Success();
 }

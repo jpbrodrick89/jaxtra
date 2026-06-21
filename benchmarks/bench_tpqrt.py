@@ -6,18 +6,21 @@ The trust-region Levenberg-Marquardt step re-triangularises
       C = [ R ]      R : (n, n) upper triangular factor of the Jacobian
           [ D ]      D : (n, n) diagonal regularisation
 
-into a new upper triangular factor R̃ with R̃ᵀR̃ = RᵀR + DᵀD.  Three ways to
-compute R̃ are compared:
+into a new factor R̃ (with R̃ᵀR̃ = RᵀR + DᵀD) plus the Householder reflectors
+``V, T``.  The two backends of the ``tpqrt`` primitive are compared against a
+plain QR baseline:
 
-  jaxtra tpqrt (LAPACK)  : tpqrt(R, D, l=n)  — LAPACK ?tpqrt, exploits both the
-                           triangular R and the triangular (diagonal) D
-  jaxtra tpqrt (Householder) : the pure-JAX fallback — n column reflectors, each
-                           a dense rank-1 update (no gather/scatter)
-  jaxtra tpqrt (Givens)  : the pure-JAX diagonal-sweep Givens fallback — pivots
-                           on R's natural diagonal, one B-diagonal per sweep
-                           (contiguous aligned slices, no gather/scatter)
-  raw geqrf              : jax._src.lax.linalg.geqrf on the dense (2n, n) stack,
-                           taking triu of the first n rows (no structure used)
+  jaxtra tpqrt (LAPACK FFI) : tpqrt(R, D, l=n) on CPU — LAPACK ?tpqrt, exploits
+                           both the triangular R and the triangular (diagonal) D
+  jaxtra tpqrt (blocked HH) : the pure-JAX fallback used off-CPU / under autodiff
+                           — compact-WY blocked Householder (BLAS-3 trailing
+                           updates), returning the same (R, V, T)
+  raw geqrf              : jax._src.lax.linalg.geqrf on the dense (2n, n) stack
+                           (a full QR; ignores the triangular structure)
+
+Note: on CPU the primitive uses the LAPACK FFI path, which beats geqrf; the
+blocked-Householder line is the fallback for platforms without a tpqrt FFI
+target (e.g. TPU) and for differentiation.
 
 Results are written to  benchmarks/results/bench_tpqrt.csv
 Plot is written to      benchmarks/results/bench_tpqrt.png
@@ -39,26 +42,20 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from jax._src.lax.linalg import geqrf
-from jaxtra._src.lax.linalg import (
-    tpqrt, _tpqrt_givens_2d, _tpqrt_householder_2d,
-    _tpqrt_blocked_householder_2d)
+from jaxtra._src.lax.linalg import tpqrt, _tpqrt_blocked_householder_2d
 
 RESULTS_DIR = pathlib.Path(__file__).parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# JIT-compiled re-triangularisations (n is static => l baked into the trace)
+# JIT-compiled re-triangularisations (n is static => l baked into the trace).
+# Each returns the full factorization so XLA cannot prune V / T.
 # ---------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=None)
 def _lapack_fn(n):
-    return jax.jit(lambda R, D: tpqrt(R, D, l=n))
-
-
-@functools.lru_cache(maxsize=None)
-def _householder_fn(n):
-    return jax.jit(lambda R, D: _tpqrt_householder_2d(R, D, n))
+    return jax.jit(lambda R, D: tpqrt(R, D, l=n))           # LAPACK FFI
 
 
 @functools.lru_cache(maxsize=None)
@@ -67,16 +64,10 @@ def _blocked_fn(n, nb=32):
 
 
 @functools.lru_cache(maxsize=None)
-def _givens_fn(n):
-    return jax.jit(lambda R, D: _tpqrt_givens_2d(R, D, n))
-
-
-@functools.lru_cache(maxsize=None)
 def _geqrf_fn(n):
     def f(R, D):
         C = jnp.concatenate([R, D], axis=0)
-        Rfac, _ = geqrf(C)
-        return jnp.triu(Rfac[:n])
+        return geqrf(C)                                     # (qr, taus)
     return jax.jit(f)
 
 
@@ -120,11 +111,9 @@ N_WARMUP = 3
 N_REPEAT = 10
 
 METHODS = [
-    ("jaxtra tpqrt (LAPACK)",         "#1f77b4", "o"),
-    ("jaxtra tpqrt (blocked HH)",     "#8c564b", "P"),
-    ("jaxtra tpqrt (unblocked HH)",   "#9467bd", "D"),
-    ("jaxtra tpqrt (Givens)",         "#2ca02c", "^"),
-    ("raw geqrf",                     "#d62728", "s"),
+    ("jaxtra tpqrt (LAPACK FFI)",      "#1f77b4", "o"),
+    ("jaxtra tpqrt (blocked HH)",      "#8c564b", "P"),
+    ("raw geqrf",                      "#d62728", "s"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -133,43 +122,34 @@ METHODS = [
 
 records = []
 
-print(f"\n{'n':>6}  {'LAPACK':>10}  {'blockHH':>10}  {'unblkHH':>10}  "
-      f"{'Givens':>10}  {'geqrf':>10}  "
-      f"{'LAPACK/qr':>10}  {'blkHH/qr':>9}  {'HH/qr':>7}  {'Giv/qr':>7}")
-print(f"{'':6}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}  {'(ms)':>10}")
-print("-" * 116)
+print(f"\n{'n':>6}  {'LAPACK FFI':>11}  {'blocked HH':>11}  {'geqrf':>11}  "
+      f"{'LAPACK/qr':>10}  {'blkHH/qr':>9}")
+print(f"{'':6}  {'(ms)':>11}  {'(ms)':>11}  {'(ms)':>11}")
+print("-" * 70)
 
 for n in SIZES:
     R, D = make_problem(n)
 
     f_lapack = _lapack_fn(n)
     f_blocked = _blocked_fn(n)
-    f_house = _householder_fn(n)
-    f_givens = _givens_fn(n)
     f_geqrf = _geqrf_fn(n)
 
-    # Sanity check: all agree (sign/phase-invariant via the Gram matrix).
+    # Sanity check: R factors agree (sign/phase-invariant via the Gram matrix).
     g = lambda M: M.conj().T @ M
-    ref = g(f_geqrf(R, D))
-    for f in (f_lapack, f_blocked, f_house, f_givens):
-        assert float(jnp.max(jnp.abs(g(f(R, D)) - ref))) < 1e-7
+    ref = g(jnp.triu(f_geqrf(R, D)[0][:n]))
+    for f in (f_lapack, f_blocked):
+        assert float(jnp.max(jnp.abs(g(f(R, D)[0]) - ref))) < 1e-7
 
     t_lapack = time_jax_fn(f_lapack, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_blocked = time_jax_fn(f_blocked, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-    t_house = time_jax_fn(f_house, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
-    t_givens = time_jax_fn(f_givens, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
     t_geqrf = time_jax_fn(f_geqrf, R, D, n_warmup=N_WARMUP, n_repeat=N_REPEAT)
 
-    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK)",       "time_ms": t_lapack * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (blocked HH)",   "time_ms": t_blocked * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (unblocked HH)", "time_ms": t_house * 1e3})
-    records.append({"n": n, "method": "jaxtra tpqrt (Givens)",       "time_ms": t_givens * 1e3})
-    records.append({"n": n, "method": "raw geqrf",                   "time_ms": t_geqrf * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (LAPACK FFI)", "time_ms": t_lapack * 1e3})
+    records.append({"n": n, "method": "jaxtra tpqrt (blocked HH)", "time_ms": t_blocked * 1e3})
+    records.append({"n": n, "method": "raw geqrf",                 "time_ms": t_geqrf * 1e3})
 
-    print(f"{n:>6d}  {t_lapack*1e3:10.3f}  {t_blocked*1e3:10.3f}  "
-          f"{t_house*1e3:10.3f}  {t_givens*1e3:10.3f}  {t_geqrf*1e3:10.3f}  "
-          f"{t_lapack/t_geqrf:9.2f}x  {t_blocked/t_geqrf:8.2f}x  "
-          f"{t_house/t_geqrf:6.2f}x  {t_givens/t_geqrf:6.2f}x")
+    print(f"{n:>6d}  {t_lapack*1e3:11.3f}  {t_blocked*1e3:11.3f}  "
+          f"{t_geqrf*1e3:11.3f}  {t_lapack/t_geqrf:9.2f}x  {t_blocked/t_geqrf:8.2f}x")
 
 # ---------------------------------------------------------------------------
 # Write CSV

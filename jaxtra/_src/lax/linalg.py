@@ -14,6 +14,7 @@ from jax._src.lax import control_flow
 from jax._src.interpreters import mlir, ad, batching
 from jax._src.lax.linalg import (
     standard_linalg_primitive,
+    linalg_primitive,
     register_cpu_gpu_lowering,
     register_module_custom_calls,
     _linalg_ffi_lowering,
@@ -609,18 +610,20 @@ batching.primitive_batchers[pentadiagonal_solveh_p] = (
 
 
 def tpqrt(a: ArrayLike, b: ArrayLike, *,
-          l: int | None = None, nb: int | None = None) -> Array:
-  r"""Re-triangularises a triangular-pentagonal matrix via QR.
+          l: int | None = None, nb: int | None = None
+          ) -> tuple[Array, Array, Array]:
+  r"""Blocked QR factorization of a triangular-pentagonal matrix.
 
-  Computes ``R = triu(qr([a; b]))`` where ``a`` is an ``(n, n)`` upper
-  triangular matrix stacked on top of an ``(m, n)`` pentagonal matrix ``b``.
-  Mirrors the inputs of :obj:`scipy.linalg.lapack.dtpqrt` (``l``, ``nb``,
-  ``a``, ``b``) but returns only the triangular factor ``R``.
+  Computes the QR factorization of ``C = [a; b]`` where ``a`` is an ``(n, n)``
+  upper triangular matrix stacked on top of an ``(m, n)`` pentagonal matrix
+  ``b``, so that ``C = Q [R; 0]``. Mirrors :obj:`scipy.linalg.lapack.dtpqrt`
+  (inputs ``l, nb, a, b``; outputs ``R, V, T``).
 
   The canonical use is the trust-region Levenberg-Marquardt update: given the
   triangular factor ``R`` of a Jacobian and a diagonal regularisation ``D``
-  (passed as a dense ``(n, n)`` diagonal ``b`` with ``l = n``), this returns
-  the factor ``R̃`` satisfying ``R̃ᴴ R̃ = Rᴴ R + Dᴴ D``.
+  (passed as a dense ``(n, n)`` diagonal ``b`` with ``l = n``), ``R`` satisfies
+  ``Rᴴ R = (original R)ᴴ R + Dᴴ D``, and ``V``/``T`` represent the orthogonal
+  ``Q`` for applying ``Qᴴ`` to a right-hand side.
 
   Args:
     a: ``(..., n, n)`` upper triangular matrix. The strictly lower triangle is
@@ -629,19 +632,25 @@ def tpqrt(a: ArrayLike, b: ArrayLike, *,
       block on top of an ``l``-by-``n`` upper trapezoidal block.
     l: Number of rows of the upper trapezoidal part of ``b``
       (``0 <= l <= min(m, n)``). Defaults to ``min(m, n)``.
-    nb: LAPACK block size used on the CPU path (``1 <= nb <= n``). Defaults to
-      ``min(n, 32)``. Has no effect on the result, only on CPU performance.
+    nb: Block size (``1 <= nb <= n``). Defaults to ``min(n, 32)``. Sets the
+      panel width and hence the column-block layout of ``T``.
 
   Returns:
-    The ``(..., n, n)`` upper triangular factor ``R``.
+    A tuple ``(R, V, T)``:
+
+    - ``R``: ``(..., n, n)`` — upper triangle holds the triangular factor.
+    - ``V``: ``(..., m, n)`` — the Householder reflectors (overwriting ``b``).
+    - ``T``: ``(..., nb, n)`` — the block reflector factors, one ``nb``-wide
+      triangular block per panel.
 
   Note:
-    On CPU this dispatches to LAPACK ``tpqrt``. On other platforms (or under
-    ``vmap``/``grad`` tracing) it falls back to a pure-JAX *blocked* Householder
-    triangularisation (compact-WY, the same blocking LAPACK uses), with ``nb``
-    as the panel width. The sign/phase convention of the reflectors may differ
-    from LAPACK's, so individual rows of ``R`` may differ by a unit-modulus
-    phase; ``Rᴴ R`` is identical.
+    On CPU this dispatches to LAPACK ``tpqrt`` (``R, V, T`` exactly as SciPy
+    returns them). On other platforms (or under ``vmap``/``grad`` tracing) it
+    falls back to a pure-JAX *blocked* Householder factorization (compact-WY,
+    the same blocking LAPACK uses). The reflector sign/phase convention of the
+    fallback may differ from LAPACK's, so ``R``, ``V`` and ``T`` can differ from
+    the CPU path by a per-column unit-modulus phase; each ``(R, V, T)`` triple
+    is internally consistent (it reproduces ``C``) and ``Rᴴ R`` is identical.
   """
   a_arr, b_arr = jnp.asarray(a), jnp.asarray(b)
   m, n = b_arr.shape[-2], b_arr.shape[-1]
@@ -668,7 +677,7 @@ def _tpqrt_shape_rule(a_shape, b_shape, *, l, nb):
         f"tpqrt requires 0 <= l <= min(m, n); got l={l}, m={m}, n={n}.")
   if n > 0 and not 1 <= nb <= n:
     raise ValueError(f"tpqrt requires 1 <= nb <= n; got nb={nb}, n={n}.")
-  return a_shape
+  return a_shape, b_shape, (nb, n)   # R, V, T
 
 
 def _tpqrt_pentagonal_mask(m, n, l, dtype):
@@ -680,70 +689,6 @@ def _tpqrt_pentagonal_mask(m, n, l, dtype):
   return ((rows < (m - l)) | (cols >= rows - (m - l))).astype(dtype)
 
 
-def _tpqrt_givens_2d(a, b, l):
-  """Pure-JAX diagonal-sweep Givens triangularisation of ``[a; b]`` (unbatched).
-
-  Eliminates the pentagonal block ``b`` into the upper triangular ``a`` one
-  *diagonal* at a time. In sweep ``o`` the pivot row ``R[j, j]`` is paired with
-  ghost row ``j - o``; every rotation uses a distinct pivot and ghost row, so a
-  sweep is one rotation of ``R`` (whole, pivots = ``diag(R)``) against an
-  ``n``-row window of the ghost block.
-
-  Rather than re-slicing that window out of a padded array each sweep, we
-  *carry* it and roll it: the window's bottom row has just been fully
-  eliminated (it leaves as zero), so the next window is ``concat([incoming,
-  window[:-1]])`` — a static slice and a concat, no ``dynamic_slice``, gather or
-  scatter anywhere. The initial window is the bottom trapezoid of ``b``; the
-  ``incoming`` rows streamed in are its rectangular top (if any) then zero
-  padding.
-
-  Eliminating a *diagonal* (each entry against its own pivot ``R[j, j]``) is the
-  vectorisable step; eliminating a *column* (every entry against the single
-  pivot ``R[k, k]``) would instead serialise into one Householder reflector.
-  """
-  n = a.shape[-1]
-  m = b.shape[-2]
-  dtype = a.dtype
-  is_complex = dtypes.issubdtype(dtype, np.complexfloating)
-  conj = lax.conj if is_complex else (lambda x: x)
-
-  R = jnp.triu(a)
-  W = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
-
-  # Stack the ghost block with zero padding so the rolling window starts on the
-  # bottom trapezoid and rolls upward through the rectangular top + padding.
-  pad_top = n - 1
-  pad_bot = max(0, n - max(l, 1))
-  total = pad_top + m + pad_bot
-  Wpad = jnp.zeros((total, n), dtype).at[pad_top:pad_top + m].set(W)
-  window0 = Wpad[total - n:]                       # bottom trapezoid window
-  incoming = Wpad[:total - n][::-1]                # rows streamed in, top-down
-  xs = jnp.concatenate([incoming, jnp.zeros((1, n), dtype)], 0)  # last unused
-
-  def sweep(carry, inc):
-    R, window = carry
-    piv_R = jnp.diagonal(R)                         # R's natural diagonal
-    piv_W = jnp.diagonal(window)                    # current ghost diagonal
-    absf = jnp.abs(piv_R)
-    absg = jnp.abs(piv_W)
-    r = jnp.sqrt(absf * absf + absg * absg)
-    do = absg != 0                                  # nothing to zero otherwise
-    safe_r = jnp.where(r == 0, 1, r)
-    safe_absf = jnp.where(absf == 0, 1, absf)
-    phase = jnp.where(absf == 0, jnp.ones_like(piv_R),
-                      piv_R / safe_absf.astype(dtype))
-    c = jnp.where(do, absf / safe_r, 1.0).astype(dtype)
-    s = jnp.where(do, phase * conj(piv_W) / safe_r.astype(dtype),
-                  jnp.zeros_like(piv_W))
-    # Unitary rotation G = [[c, s], [-conj(s), c]] zeroing piv_W against piv_R.
-    newR = c[:, None] * R + s[:, None] * window
-    newW = -conj(s)[:, None] * R + c[:, None] * window
-    # Drop the fully-eliminated bottom row, stream in the next row on top.
-    window = jnp.concatenate([inc[None], newW[:-1]], 0)
-    return (newR, window), None
-
-  (R, _), _ = jax.lax.scan(sweep, (R, window0), xs)
-  return jnp.triu(R)
 
 
 def _tpqrt_reflector(alpha, tail, conj, real):
@@ -822,6 +767,9 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
   and slice widths are statically known — no padding, masking, or dynamic
   slicing. Only the within-panel work is a ``scan`` (over small fixed-size
   blocks), keeping the traced graph ``O(n / nb)`` rather than ``O(n)``.
+  Returns ``(R, V, T)`` matching LAPACK tpqrt's outputs: ``R`` (n x n, upper
+  triangle), ``V`` (m x n reflectors) and ``T`` (nb x n, one ``pb``-wide
+  triangular block per panel at columns ``[p:p+pb]``).
   """
   n = a.shape[-1]
   m = b.shape[-2]
@@ -830,9 +778,10 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
   conj = lax.conj if is_complex else (lambda x: x)
   real = lax.real if is_complex else (lambda x: x)
 
-  nb = max(1, min(nb, n))
   R = jnp.triu(a)
   B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
+  V = jnp.zeros((m, n), dtype)                  # Householder reflectors
+  Tmat = jnp.zeros((nb, n), dtype)              # block reflector factors
 
   for p in range(0, n, nb):
     pb = min(nb, n - p)                       # static panel width
@@ -863,6 +812,8 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
 
     T, _ = jax.lax.scan(t_body, jnp.zeros((pb, pb), dtype), (iota, Vb.T))
     R = R.at[p:p + pb, p:p + pb].set(Rpp)
+    V = V.at[:, p:p + pb].set(Vb)
+    Tmat = Tmat.at[:pb, p:p + pb].set(T)
 
     # 3. BLAS-3 trailing update: Qᴴ = I - V Tᴴ Vᴴ on columns [p + pb:].
     if p + pb < n:
@@ -873,7 +824,7 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
       R = R.at[p:p + pb, p + pb:].set(Rtr - Z)
       B = B.at[:, p + pb:].set(Btr - Vb @ Z)
 
-  return jnp.triu(R)
+  return jnp.triu(R), V, Tmat
 
 
 def _tpqrt_lowering(a, b, *, l, nb):
@@ -886,18 +837,24 @@ def _tpqrt_lowering(a, b, *, l, nb):
 def _tpqrt_cpu_lowering(ctx, a, b, *, l, nb):
   a_aval = ctx.avals_in[0]
   target_name = lapack.prepare_lapack_call("tpqrt_ffi", a_aval.dtype)
-  rule = _linalg_ffi_lowering(target_name, operand_output_aliases={0: 0})
+  # a -> R (output 0), b -> V (output 1); T (output 2) is freshly allocated.
+  rule = _linalg_ffi_lowering(target_name,
+                              operand_output_aliases={0: 0, 1: 1})
   return rule(ctx, a, b, l=l, nb=nb)
 
 
-tpqrt_p = standard_linalg_primitive(
-    (_float | _complex, _float | _complex), (2, 2),
-    _tpqrt_shape_rule, "tpqrt")
+def _tpqrt_dtype_rule(a_dtype, b_dtype, **_):
+  return a_dtype, a_dtype, a_dtype   # R, V, T all share the input dtype
 
-# Pure-JAX block-Givens fallback (all platforms without a registered FFI
+
+tpqrt_p = linalg_primitive(
+    _tpqrt_dtype_rule, (_float | _complex, _float | _complex), (2, 2),
+    _tpqrt_shape_rule, "tpqrt", multiple_results=True)
+
+# Pure-JAX blocked-Householder fallback (all platforms without a registered FFI
 # target, plus vmap/grad tracing).
 mlir.register_lowering(tpqrt_p, mlir.lower_fun(
-    _tpqrt_lowering, multiple_results=False))
+    _tpqrt_lowering, multiple_results=True))
 
 # CPU lowering via LAPACK tpqrt.
 mlir.register_lowering(tpqrt_p, _tpqrt_cpu_lowering, platform='cpu')
