@@ -681,14 +681,21 @@ def _tpqrt_pentagonal_mask(m, n, l, dtype):
 
 
 def _tpqrt_givens_2d(a, b, l):
-  """Pure-JAX block-Givens triangularisation of ``[a; b]`` (unbatched).
+  """Pure-JAX diagonal-sweep Givens triangularisation of ``[a; b]`` (unbatched).
 
   Eliminates the pentagonal block ``b`` (``m`` "ghost" rows) into the upper
-  triangular ``a`` (``n`` rows). Rotation ``(r, j)`` — zeroing ``b[r, j]``
-  against pivot ``R[j, j]`` — depends only on ``(r - 1, j)`` and ``(r, j-1)``,
-  so all rotations on the anti-diagonal ``r + j = t`` are independent. We sweep
-  ``t = 0 .. m + n - 2`` (the "append ``n-1`` zeros" staggering of the ``m``
-  ghost rows), applying one block of independent rotations per step.
+  triangular ``a`` (``n`` rows) one *diagonal* at a time. Pairing ghost row ``r``
+  with pivot row ``R[r + o, r + o]`` (so ghost ``r`` is annihilated against R's
+  natural diagonal) makes every rotation in a sweep use a distinct ghost row and
+  a distinct pivot row, at a **fixed offset** ``o`` between them — so the sweep
+  is a single rotation of the contiguous, aligned slices ``R[o:]`` and ``W``,
+  with the pivots read straight off the diagonals. No row of R is reordered and
+  there is no gather/scatter — just ``dynamic_slice``/``dynamic_update_slice``
+  with a dynamic offset.
+
+  Sweep ``o`` runs over ``[-(m - max(l, 1)), n - 1]``; rotation ``(r, r+o)`` zeros
+  ``W[r, r+o]`` and fills ``W[r, r+o+1:]``, which the next sweep (``o + 1``)
+  eliminates, so after the last sweep ``W`` is zero.
   """
   n = a.shape[-1]
   m = b.shape[-2]
@@ -696,50 +703,47 @@ def _tpqrt_givens_2d(a, b, l):
   is_complex = dtypes.issubdtype(dtype, np.complexfloating)
   conj = lax.conj if is_complex else (lambda x: x)
 
-  # Enforce the pentagonal structure that LAPACK tpqrt assumes (masking the
-  # structural-zero corner makes this fallback agree with LAPACK regardless of
-  # what the caller stored there).
-  b = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
+  R = jnp.triu(a)
+  W = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
 
-  # Pad R with a dummy trailing row (index n): inactive rotations scatter there
-  # harmlessly. Active rotations at a step hit distinct rows, so no conflict.
-  Rt = jnp.concatenate([jnp.triu(a), jnp.zeros((1, n), dtype)], axis=0)
-  W = b  # ghost rows, (m, n)
+  # Sweep offsets: o = j - r between pivot row j and ghost row r. The smallest
+  # useful offset is where the first ghost entry (its start column) is reached.
+  o_min = -(m - max(l, 1))
+  nrounds = n - o_min
+  p_lo = max(0, -o_min)            # rows of R padding below index 0
+  p_hi = max(0, m - 1)             # rows of R padding above index n-1
+  Rpad = jnp.zeros((p_lo + n + p_hi, n), dtype).at[p_lo:p_lo + n].set(R)
   rows = jnp.arange(m)
 
-  def step(t, carry):
-    Rt, W = carry
-    jj_raw = t - rows                            # pivot row/col per ghost row
-    valid = (jj_raw >= 0) & (jj_raw < n)
-    jj = jnp.where(valid, jj_raw, n)             # clamp inactive -> dummy row
-    col = jnp.where(valid, jj_raw, 0)            # clamp inactive -> col 0
-    Rj = Rt[jj]                                  # (m, n) pivot rows
-    piv_R = Rj[rows, col]                        # R[j, j]
-    piv_W = W[rows, col]                         # b[r, j]
+  def sweep(carry, o):
+    Rpad, W = carry
+    # Ghost row r pairs with R row (o + r): contiguous, aligned slices.
+    R_slice = jax.lax.dynamic_slice(Rpad, (o + p_lo, 0), (m, n))
+    cols = o + rows                              # pivot column per ghost row
+    active = (cols >= 0) & (cols < n)            # pivot row in range
+    cc = jnp.clip(cols, 0, n - 1)[:, None]
+    piv_R = jnp.take_along_axis(R_slice, cc, axis=1)[:, 0]   # diag of R slice
+    piv_W = jnp.take_along_axis(W, cc, axis=1)[:, 0]          # o-th diag of W
     absf = jnp.abs(piv_R)
     absg = jnp.abs(piv_W)
     r = jnp.sqrt(absf * absf + absg * absg)
-    active = valid & (absg != 0)                 # nothing to zero otherwise
+    do = active & (absg != 0)                    # nothing to zero otherwise
     safe_r = jnp.where(r == 0, 1, r)
     safe_absf = jnp.where(absf == 0, 1, absf)
-    # Unit phase of the pivot (sign for real types); gives a real cosine.
     phase = jnp.where(absf == 0, jnp.ones_like(piv_R),
                       piv_R / safe_absf.astype(dtype))
-    c = jnp.where(active, absf / safe_r, 1.0).astype(dtype)
-    s = jnp.where(active, phase * conj(piv_W) / safe_r.astype(dtype),
+    c = jnp.where(do, absf / safe_r, 1.0).astype(dtype)
+    s = jnp.where(do, phase * conj(piv_W) / safe_r.astype(dtype),
                   jnp.zeros_like(piv_W))
-    # Unitary rotation G = [[c, s], [-conj(s), c]] zeroing piv_W against piv_R
-    # (for real types conj is the identity, recovering the usual Givens form).
-    newRj = c[:, None] * Rj + s[:, None] * W
-    newWi = -conj(s)[:, None] * Rj + c[:, None] * W
-    keep = active[:, None]
-    Rt = Rt.at[jj].set(jnp.where(keep, newRj, Rj))
-    W = jnp.where(keep, newWi, W)
-    return Rt, W
+    # Unitary rotation G = [[c, s], [-conj(s), c]] zeroing piv_W against piv_R.
+    newR = c[:, None] * R_slice + s[:, None] * W
+    newW = -conj(s)[:, None] * R_slice + c[:, None] * W
+    Rpad = jax.lax.dynamic_update_slice(Rpad, newR, (o + p_lo, 0))
+    return (Rpad, newW), None
 
-  nsteps = max(m + n - 1, 0)
-  Rt, W = control_flow.fori_loop(0, nsteps, step, (Rt, W))
-  return Rt[:n]
+  offsets = o_min + jnp.arange(nrounds)
+  (Rpad, W), _ = jax.lax.scan(sweep, (Rpad, W), offsets)
+  return jnp.triu(Rpad[p_lo:p_lo + n])
 
 
 def _tpqrt_reflector(alpha, tail, conj, real):

@@ -13,8 +13,9 @@ compute R̃ are compared:
                            triangular R and the triangular (diagonal) D
   jaxtra tpqrt (Householder) : the pure-JAX fallback — n column reflectors, each
                            a dense rank-1 update (no gather/scatter)
-  jaxtra tpqrt (Givens)  : the earlier pure-JAX fallback — sweeps the m + n - 1
-                           independent anti-diagonal rotation blocks
+  jaxtra tpqrt (Givens)  : the pure-JAX diagonal-sweep Givens fallback — pivots
+                           on R's natural diagonal, one B-diagonal per sweep
+                           (contiguous aligned slices, no gather/scatter)
   raw geqrf              : jax._src.lax.linalg.geqrf on the dense (2n, n) stack,
                            taking triu of the first n rows (no structure used)
 
