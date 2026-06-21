@@ -1,36 +1,36 @@
 n,method,time_ms
-16,jaxtra tpqrt (LAPACK),0.02087950002760408
-16,jaxtra tpqrt (blocked HH),0.04977200001121673
-16,jaxtra tpqrt (unblocked HH),0.0498970000535337
-16,jaxtra tpqrt (Givens),0.053018499954760046
-16,raw geqrf,0.015339000071890041
-32,jaxtra tpqrt (LAPACK),0.06034800003362761
-32,jaxtra tpqrt (blocked HH),0.10400550002032105
-32,jaxtra tpqrt (unblocked HH),0.12946549998105183
-32,jaxtra tpqrt (Givens),0.14118100000359846
-32,raw geqrf,0.08609150000893351
-64,jaxtra tpqrt (LAPACK),0.18520800000487725
-64,jaxtra tpqrt (blocked HH),0.2891139999405823
-64,jaxtra tpqrt (unblocked HH),0.16093599998612262
-64,jaxtra tpqrt (Givens),0.5005529999380087
-64,raw geqrf,0.15571000000136337
-128,jaxtra tpqrt (LAPACK),0.42698350006276087
-128,jaxtra tpqrt (blocked HH),1.6698565000297094
-128,jaxtra tpqrt (unblocked HH),0.7422305000091001
-128,jaxtra tpqrt (Givens),3.2245969999848967
-128,raw geqrf,32.437827000023844
-256,jaxtra tpqrt (LAPACK),3.686140000013438
-256,jaxtra tpqrt (blocked HH),8.937611000021661
-256,jaxtra tpqrt (unblocked HH),13.47123349995627
-256,jaxtra tpqrt (Givens),98.79095799999504
-256,raw geqrf,34.006152000017664
-512,jaxtra tpqrt (LAPACK),50.99962250005774
-512,jaxtra tpqrt (blocked HH),36.106500000016695
-512,jaxtra tpqrt (unblocked HH),138.0295949999777
-512,jaxtra tpqrt (Givens),592.0238849999464
-512,raw geqrf,97.28801200003545
-1024,jaxtra tpqrt (LAPACK),147.83593000004203
-1024,jaxtra tpqrt (blocked HH),194.0893215000301
-1024,jaxtra tpqrt (unblocked HH),534.1500250000308
-1024,jaxtra tpqrt (Givens),4226.755354000034
-1024,raw geqrf,393.0867000000262
+16,jaxtra tpqrt (LAPACK),0.021184499985338334
+16,jaxtra tpqrt (blocked HH),0.07015000002752458
+16,jaxtra tpqrt (unblocked HH),0.06594000001314271
+16,jaxtra tpqrt (Givens),0.06593550000388859
+16,raw geqrf,0.021137999993925405
+32,jaxtra tpqrt (LAPACK),0.05738900000551439
+32,jaxtra tpqrt (blocked HH),0.10531899997090477
+32,jaxtra tpqrt (unblocked HH),0.10618149997299042
+32,jaxtra tpqrt (Givens),0.11215699998956552
+32,raw geqrf,0.08469849996117773
+64,jaxtra tpqrt (LAPACK),0.16139699999939694
+64,jaxtra tpqrt (blocked HH),0.33509249999497115
+64,jaxtra tpqrt (unblocked HH),0.19478149999940797
+64,jaxtra tpqrt (Givens),0.40996850000851737
+64,raw geqrf,0.15032300001394105
+128,jaxtra tpqrt (LAPACK),0.4432204999886835
+128,jaxtra tpqrt (blocked HH),0.9319740000250931
+128,jaxtra tpqrt (unblocked HH),0.7482309999886638
+128,jaxtra tpqrt (Givens),2.0762714999875698
+128,raw geqrf,1.0539429999880667
+256,jaxtra tpqrt (LAPACK),1.9968974999926559
+256,jaxtra tpqrt (blocked HH),6.302565500021728
+256,jaxtra tpqrt (unblocked HH),10.210260999997445
+256,jaxtra tpqrt (Givens),47.63522350000926
+256,raw geqrf,3.982710999991923
+512,jaxtra tpqrt (LAPACK),9.761253999982955
+512,jaxtra tpqrt (blocked HH),33.165360499964436
+512,jaxtra tpqrt (unblocked HH),92.97422150001466
+512,jaxtra tpqrt (Givens),218.6956715000008
+512,raw geqrf,15.83486199999129
+1024,jaxtra tpqrt (LAPACK),31.738675000013927
+1024,jaxtra tpqrt (blocked HH),134.49664899999902
+1024,jaxtra tpqrt (unblocked HH),536.4645180000025
+1024,jaxtra tpqrt (Givens),2349.752340000009
+1024,raw geqrf,89.21972800001754

@@ -683,18 +683,19 @@ def _tpqrt_pentagonal_mask(m, n, l, dtype):
 def _tpqrt_givens_2d(a, b, l):
   """Pure-JAX diagonal-sweep Givens triangularisation of ``[a; b]`` (unbatched).
 
-  Eliminates the pentagonal block ``b`` (``m`` "ghost" rows) into the upper
-  triangular ``a`` (``n`` rows) one *diagonal* at a time. In sweep ``o``, pivot
-  row ``R[j, j]`` is paired with ghost row ``j - o``: every rotation uses a
-  distinct pivot row and a distinct ghost row, so the whole sweep is a single
-  rotation of ``R`` against ``W`` shifted by ``o``. The pivot is then literally
-  R's natural diagonal ``diag(R)``, ``R`` is rotated *whole* (never sliced or
-  reordered, no gather/scatter), and only ``b`` is zero-padded and slid — a
-  contiguous ``dynamic_slice`` window into the padded ghost block.
+  Eliminates the pentagonal block ``b`` into the upper triangular ``a`` one
+  *diagonal* at a time. In sweep ``o`` the pivot row ``R[j, j]`` is paired with
+  ghost row ``j - o``; every rotation uses a distinct pivot and ghost row, so a
+  sweep is one rotation of ``R`` (whole, pivots = ``diag(R)``) against an
+  ``n``-row window of the ghost block.
 
-  Sweep ``o`` runs over ``[-(m - max(l, 1)), n - 1]``; it zeros the ``o``-th
-  diagonal of ``W`` (``W[r, r+o]``) and fills the next, which sweep ``o + 1``
-  clears, so after the last sweep ``W`` is zero.
+  Rather than re-slicing that window out of a padded array each sweep, we
+  *carry* it and roll it: the window's bottom row has just been fully
+  eliminated (it leaves as zero), so the next window is ``concat([incoming,
+  window[:-1]])`` — a static slice and a concat, no ``dynamic_slice``, gather or
+  scatter anywhere. The initial window is the bottom trapezoid of ``b``; the
+  ``incoming`` rows streamed in are its rectangular top (if any) then zero
+  padding.
 
   Eliminating a *diagonal* (each entry against its own pivot ``R[j, j]``) is the
   vectorisable step; eliminating a *column* (every entry against the single
@@ -709,25 +710,24 @@ def _tpqrt_givens_2d(a, b, l):
   R = jnp.triu(a)
   W = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
 
-  # Sweep offsets o = j - r between pivot row j and ghost row r. Pad the ghost
-  # block so that "ghost row j - o for j = 0 .. n-1" is a fixed-size window:
-  # ghost index j - o ranges over [-(n-1), (n-1) - o_min].
-  o_min = -(m - max(l, 1))
-  nrounds = n - o_min
-  pad_top = n - 1                       # ghost indices down to -(n-1)
-  pad_bot = max(0, n - max(l, 1))       # ghost indices up to (n-1) - o_min
-  Wpad = jnp.zeros((pad_top + m + pad_bot, n), dtype).at[pad_top:pad_top + m].set(W)
+  # Stack the ghost block with zero padding so the rolling window starts on the
+  # bottom trapezoid and rolls upward through the rectangular top + padding.
+  pad_top = n - 1
+  pad_bot = max(0, n - max(l, 1))
+  total = pad_top + m + pad_bot
+  Wpad = jnp.zeros((total, n), dtype).at[pad_top:pad_top + m].set(W)
+  window0 = Wpad[total - n:]                       # bottom trapezoid window
+  incoming = Wpad[:total - n][::-1]                # rows streamed in, top-down
+  xs = jnp.concatenate([incoming, jnp.zeros((1, n), dtype)], 0)  # last unused
 
-  def sweep(carry, o):
-    R, Wpad = carry
-    # Ghost row paired with R row j is W[j - o]; gather as a contiguous window.
-    W_al = jax.lax.dynamic_slice(Wpad, (pad_top - o, 0), (n, n))
-    piv_R = jnp.diagonal(R)                       # R's natural diagonal
-    piv_W = jnp.diagonal(W_al)                    # W[j - o, j]
+  def sweep(carry, inc):
+    R, window = carry
+    piv_R = jnp.diagonal(R)                         # R's natural diagonal
+    piv_W = jnp.diagonal(window)                    # current ghost diagonal
     absf = jnp.abs(piv_R)
     absg = jnp.abs(piv_W)
     r = jnp.sqrt(absf * absf + absg * absg)
-    do = absg != 0                                # nothing to zero otherwise
+    do = absg != 0                                  # nothing to zero otherwise
     safe_r = jnp.where(r == 0, 1, r)
     safe_absf = jnp.where(absf == 0, 1, absf)
     phase = jnp.where(absf == 0, jnp.ones_like(piv_R),
@@ -736,13 +736,13 @@ def _tpqrt_givens_2d(a, b, l):
     s = jnp.where(do, phase * conj(piv_W) / safe_r.astype(dtype),
                   jnp.zeros_like(piv_W))
     # Unitary rotation G = [[c, s], [-conj(s), c]] zeroing piv_W against piv_R.
-    newR = c[:, None] * R + s[:, None] * W_al
-    newW = -conj(s)[:, None] * R + c[:, None] * W_al
-    Wpad = jax.lax.dynamic_update_slice(Wpad, newW, (pad_top - o, 0))
-    return (newR, Wpad), None
+    newR = c[:, None] * R + s[:, None] * window
+    newW = -conj(s)[:, None] * R + c[:, None] * window
+    # Drop the fully-eliminated bottom row, stream in the next row on top.
+    window = jnp.concatenate([inc[None], newW[:-1]], 0)
+    return (newR, window), None
 
-  offsets = o_min + jnp.arange(nrounds)
-  (R, Wpad), _ = jax.lax.scan(sweep, (R, Wpad), offsets)
+  (R, _), _ = jax.lax.scan(sweep, (R, window0), xs)
   return jnp.triu(R)
 
 
