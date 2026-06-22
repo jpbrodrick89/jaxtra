@@ -762,7 +762,9 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
        (BLAS-3): ``W = R_panelᵀ + V_Bᴴ B``, ``Z = Tᴴ W``,
        ``R_panel -= Z``, ``B -= V_B Z``.
 
-  The dense trailing update is what closes the gap to ``geqrf`` at large ``n``.
+  The BLAS-3 trailing update makes the fallback practical (~4x faster than the
+  unblocked sweep at n=1024), though on CPU it still trails LAPACK ``geqrf`` by
+  ~2x; the LAPACK FFI path is preferred whenever it is available.
   The panel loop is a Python loop (the panel count is static), so all offsets
   and slice widths are statically known — no padding, masking, or dynamic
   slicing. Only the within-panel work is a ``scan`` (over small fixed-size

@@ -90,8 +90,13 @@ def make_problem(n, dtype=np.float64):
 # Timing helper
 # ---------------------------------------------------------------------------
 
-def time_jax_fn(fn, *args, n_warmup=3, n_repeat=10):
-    """Warm up then return median wall-time in seconds."""
+def time_jax_fn(fn, *args, n_warmup=5, n_repeat=25):
+    """Warm up then return the *minimum* wall-time in seconds.
+
+    Minimum (not median) is reported: for a deterministic compute kernel the
+    fastest observed run is the least contended by other machine load, so it is
+    far more reproducible than the median on a shared/throttled host.
+    """
     for _ in range(n_warmup):
         jax.block_until_ready(fn(*args))
     times = []
@@ -99,7 +104,7 @@ def time_jax_fn(fn, *args, n_warmup=3, n_repeat=10):
         t0 = time.perf_counter()
         jax.block_until_ready(fn(*args))
         times.append(time.perf_counter() - t0)
-    return float(np.median(times))
+    return float(np.min(times))
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +112,8 @@ def time_jax_fn(fn, *args, n_warmup=3, n_repeat=10):
 # ---------------------------------------------------------------------------
 
 SIZES = [16, 32, 64, 128, 256, 512, 1024]
-N_WARMUP = 3
-N_REPEAT = 10
+N_WARMUP = 5
+N_REPEAT = 25
 
 METHODS = [
     ("jaxtra tpqrt (LAPACK FFI)",      "#1f77b4", "o"),
