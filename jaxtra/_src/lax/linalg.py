@@ -716,38 +716,6 @@ def _tpqrt_reflector(alpha, tail, conj, real):
   return tau, v_tail
 
 
-def _tpqrt_householder_2d(a, b, l):
-  """Pure-JAX Householder triangularisation of ``[a; b]`` (unbatched).
-
-  The unblocked LAPACK-like fallback. Column ``j`` of the stack ``[a; b]`` has
-  all of its sub-diagonal mass in ``b`` (``a`` is already upper triangular), so
-  a single Householder reflector mixing the pivot row ``R[j, :]`` with the ``m``
-  rows of ``b`` zeros ``b[:, j]``. We ``scan`` over the columns, carrying ``B``
-  and *emitting* each finished row of ``R`` — XLA stacks the outputs, so no
-  explicit row scatter is needed.
-  """
-  n = a.shape[-1]
-  m = b.shape[-2]
-  dtype = a.dtype
-  is_complex = dtypes.issubdtype(dtype, np.complexfloating)
-  conj = lax.conj if is_complex else (lambda x: x)
-  real = lax.real if is_complex else (lambda x: x)
-
-  R = jnp.triu(a)
-  B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
-
-  def body(B, xs):
-    j, r_row = xs                          # r_row = original R[j, :]
-    tau, v_tail = _tpqrt_reflector(r_row[j], B[:, j], conj, real)
-    # vᴴ P over the stacked pivot row and B (columns < j are already zero).
-    vHP = r_row + conj(v_tail) @ B
-    B = B - tau * v_tail[:, None] * vHP[None, :]
-    return B, r_row - tau * vHP
-
-  _, R = jax.lax.scan(body, B, (jnp.arange(n), R))
-  return jnp.triu(R)
-
-
 def _tpqrt_blocked_householder_2d(a, b, l, nb):
   """Pure-JAX *blocked* Householder triangularisation of ``[a; b]`` (unbatched).
 
@@ -765,10 +733,15 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
   The BLAS-3 trailing update makes the fallback practical (~4x faster than the
   unblocked sweep at n=1024), though on CPU it still trails LAPACK ``geqrf`` by
   ~2x; the LAPACK FFI path is preferred whenever it is available.
-  The panel loop is a Python loop (the panel count is static), so all offsets
-  and slice widths are statically known — no padding, masking, or dynamic
-  slicing. Only the within-panel work is a ``scan`` (over small fixed-size
-  blocks), keeping the traced graph ``O(n / nb)`` rather than ``O(n)``.
+
+  The panel loop is a Python loop (the panel count is static), so the outputs
+  are assembled by *concatenation* rather than scatter-updates into preallocated
+  arrays — row band ``p:p+pb`` of ``R`` is touched only by panel ``p`` (its
+  pivot rows), and ``B`` is consumed front-to-back, so we carry only its
+  shrinking trailing remainder. No full working matrix is materialised or
+  copied per panel, which matters on GPU where a per-panel ``dynamic_update_slice``
+  of the whole array would be an O(n²)-per-panel copy.
+
   Returns ``(R, V, T)`` matching LAPACK tpqrt's outputs: ``R`` (n x n, upper
   triangle), ``V`` (m x n reflectors) and ``T`` (nb x n, one ``pb``-wide
   triangular block per panel at columns ``[p:p+pb]``).
@@ -780,19 +753,18 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
   conj = lax.conj if is_complex else (lambda x: x)
   real = lax.real if is_complex else (lambda x: x)
 
-  R = jnp.triu(a)
-  B = b * _tpqrt_pentagonal_mask(m, n, l, dtype)
-  V = jnp.zeros((m, n), dtype)                  # Householder reflectors
-  Tmat = jnp.zeros((nb, n), dtype)              # block reflector factors
+  R_in = jnp.triu(a)
+  B_rem = b * _tpqrt_pentagonal_mask(m, n, l, dtype)   # shrinking trailing B
+  r_bands, v_blocks, t_blocks = [], [], []
 
   for p in range(0, n, nb):
     pb = min(nb, n - p)                       # static panel width
-    Rpp = R[p:p + pb, p:p + pb]               # panel diagonal block (pb x pb)
-    Bp = B[:, p:p + pb]                        # panel columns of B (m x pb)
+    Rpp = R_in[p:p + pb, p:p + pb]            # panel diagonal block (pb x pb)
+    Bp = B_rem[:, :pb]                         # this panel's columns of B
     iota = jnp.arange(pb)
 
     # 1. Unblocked factorisation of the panel: scan over panel columns,
-    #    emitting each finished R row, the reflector tail and tau.
+    #    emitting each finished R row, the reflector tail and tau (no scatter).
     def col_body(Bp, xs):
       jl, rpp_row = xs
       tau, u = _tpqrt_reflector(rpp_row[jl], Bp[:, jl], conj, real)
@@ -800,7 +772,7 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
       Bp = Bp - tau * u[:, None] * vHP[None, :]
       return Bp, (rpp_row - tau * vHP, u, tau)
 
-    Bp, (Rpp, Vb_rows, Tau) = jax.lax.scan(col_body, Bp, (iota, Rpp))
+    _, (Rpp_fac, Vb_rows, Tau) = jax.lax.scan(col_body, Bp, (iota, Rpp))
     Vb = Vb_rows.T                              # (m, pb) reflector tails
 
     # 2. Triangular factor T of the block reflector (T[i, j], i <= j).
@@ -813,19 +785,25 @@ def _tpqrt_blocked_householder_2d(a, b, l, nb):
       return T.at[:, j].set(col), None
 
     T, _ = jax.lax.scan(t_body, jnp.zeros((pb, pb), dtype), (iota, Vb.T))
-    R = R.at[p:p + pb, p:p + pb].set(Rpp)
-    V = V.at[:, p:p + pb].set(Vb)
-    Tmat = Tmat.at[:pb, p:p + pb].set(T)
 
-    # 3. BLAS-3 trailing update: Qᴴ = I - V Tᴴ Vᴴ on columns [p + pb:].
-    if p + pb < n:
-      Rtr = R[p:p + pb, p + pb:]               # pivot rows, trailing columns
-      Btr = B[:, p + pb:]
-      W = Rtr + conj(Vb).T @ Btr                # (pb, n - p - pb)
-      Z = conj(T).T @ W
-      R = R.at[p:p + pb, p + pb:].set(Rtr - Z)
-      B = B.at[:, p + pb:].set(Btr - Vb @ Z)
+    # 3. BLAS-3 trailing update: Qᴴ = I - V Tᴴ Vᴴ on columns [p + pb:]. The
+    #    trailing block of R is the (untouched) input rows; B's trailing block
+    #    becomes the next panel's working B (empty on the last panel).
+    Rtr = R_in[p:p + pb, p + pb:]
+    Btr = B_rem[:, pb:]
+    Z = conj(T).T @ (Rtr + conj(Vb).T @ Btr)    # (pb, n - p - pb)
+    B_rem = Btr - Vb @ Z
 
+    # Assemble this panel's output blocks (concatenation, not scatter).
+    r_bands.append(jnp.concatenate(
+        [jnp.zeros((pb, p), dtype), Rpp_fac, Rtr - Z], axis=1))
+    v_blocks.append(Vb)
+    t_blocks.append(jnp.concatenate(
+        [T, jnp.zeros((nb - pb, pb), dtype)], axis=0))
+
+  R = jnp.concatenate(r_bands, axis=0)
+  V = jnp.concatenate(v_blocks, axis=1)
+  Tmat = jnp.concatenate(t_blocks, axis=1)
   return jnp.triu(R), V, Tmat
 
 
