@@ -131,4 +131,50 @@ extern template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 extern template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ---------------------------------------------------------------------------
+// TridiagLuFactor<dtype>
+// ---------------------------------------------------------------------------
+// Computes the LU factorization of a tridiagonal matrix via LAPACK gttrf.
+//
+// Input convention (mirrors JAX's tridiagonal_solve padding):
+//   dl[i] = A[i, i-1]  for i in [0, n):  dl[0] is padding/unused
+//   d[i]  = A[i, i]    for i in [0, n)
+//   du[i] = A[i, i+1]  for i in [0, n):  du[n-1] is padding/unused
+//
+// All three diagonals are passed as length-n arrays (padded).
+//
+// Output:
+//   dl_out  : (*, n) — L multipliers; dl_out[..., 0] is padding
+//   d_out   : (*, n) — U main diagonal
+//   du_out  : (*, n) — U first superdiagonal; du_out[..., n-1] is padding
+//   du2_out : (*, n) — U second superdiagonal; last two elements are zero
+//   ipiv_out: (*, n) int32 — 1-based pivot indices from LAPACK
+template <ffi::DataType dtype>
+struct TridiagLuFactor {
+  using ValueType = ffi::NativeType<dtype>;
+
+  // Fortran LAPACK calling convention for all four variants.
+  using FnType = void(int* /*n*/, ValueType* /*dl*/, ValueType* /*d*/,
+                      ValueType* /*du*/, ValueType* /*du2*/,
+                      int* /*ipiv*/, int* /*info*/);
+
+  // Function pointer; nullptr until initialize() is called.
+  inline static FnType* fn = nullptr;
+
+  static ffi::Error Kernel(ffi::Buffer<dtype> dl,
+                            ffi::Buffer<dtype> d,
+                            ffi::Buffer<dtype> du,
+                            ffi::ResultBuffer<dtype> dl_out,
+                            ffi::ResultBuffer<dtype> d_out,
+                            ffi::ResultBuffer<dtype> du_out,
+                            ffi::ResultBuffer<dtype> du2_out,
+                            ffi::ResultBuffer<ffi::DataType::S32> ipiv_out);
+};
+
+// Explicit instantiation declarations (definitions in lapack_kernels.cc).
+extern template struct TridiagLuFactor<ffi::DataType::F32>;
+extern template struct TridiagLuFactor<ffi::DataType::F64>;
+extern template struct TridiagLuFactor<ffi::DataType::C64>;
+extern template struct TridiagLuFactor<ffi::DataType::C128>;
+
 }  // namespace jaxtra

@@ -5,12 +5,14 @@ from functools import partial
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 from jax import ffi as _jax_ffi
 from jax._src import core, dtypes
 from jax._src.lax import lax
 from jax._src.lax import control_flow
 from jax._src.interpreters import mlir, ad, batching
+from jax._src import dispatch
 from jax._src.lax.linalg import (
     standard_linalg_primitive,
     register_cpu_gpu_lowering,
@@ -586,3 +588,160 @@ def _pentadiagonal_solveh_batching_rule(batched_args, batch_dims):
 
 batching.primitive_batchers[pentadiagonal_solveh_p] = (
     _pentadiagonal_solveh_batching_rule)
+
+
+# ---------------------------------------------------------------------------
+# Tridiagonal LU factorization  (LAPACK gttrf)
+# ---------------------------------------------------------------------------
+#
+# Input convention (mirrors JAX's tridiagonal_solve padding):
+#   dl[..., i] = A[i, i-1]  for i in [0, n):  dl[..., 0] is padding
+#   d[..., i]  = A[i, i]    for i in [0, n)
+#   du[..., i] = A[i, i+1]  for i in [0, n):  du[..., n-1] is padding
+#
+# All three diagonals have shape (..., n).
+#
+# Returns (dl_out, d_out, du_out, du2_out, ipiv_out) where:
+#   dl_out  : (..., n) — L multipliers; position 0 is padding
+#   d_out   : (..., n) — U main diagonal
+#   du_out  : (..., n) — U first superdiagonal; position n-1 is padding
+#   du2_out : (..., n) — U second superdiagonal; last two elements are 0
+#   ipiv_out: (..., n) int32 — 1-based pivot indices
+
+
+def gttrf(dl: ArrayLike, d: ArrayLike, du: ArrayLike
+          ) -> tuple[Array, Array, Array, Array, Array]:
+  """Computes the LU factorization of a tridiagonal matrix.
+
+  Wraps LAPACK ``gttrf``.  All three diagonals must be padded to length ``n``
+  (the main-diagonal length), following JAX's ``tridiagonal_solve`` convention:
+  ``dl[..., 0]`` and ``du[..., n-1]`` are unused padding.
+
+  Args:
+    dl: Subdiagonal, shape ``(..., n)``.  ``dl[..., 0]`` is ignored.
+    d:  Main diagonal, shape ``(..., n)``.
+    du: Superdiagonal, shape ``(..., n)``.  ``du[..., n-1]`` is ignored.
+
+  Returns:
+    A five-tuple ``(dl_out, d_out, du_out, du2_out, ipiv_out)``:
+
+    * **dl_out** ``(..., n)`` — lower-bidiagonal factor L (unit diagonal
+      implied); ``dl_out[..., 0]`` is padding.
+    * **d_out** ``(..., n)`` — main diagonal of U.
+    * **du_out** ``(..., n)`` — first superdiagonal of U;
+      ``du_out[..., n-1]`` is padding.
+    * **du2_out** ``(..., n)`` — second superdiagonal of U (arises from row
+      pivoting); ``du2_out[..., n-2]`` and ``du2_out[..., n-1]`` are zero.
+    * **ipiv_out** ``(..., n)`` int32 — 1-based pivot indices.
+      Row ``i`` was interchanged with row ``ipiv_out[..., i] - 1``.
+  """
+  dl, d, du = core.standard_insert_pvary(dl, d, du)
+  return gttrf_p.bind(dl, d, du)
+
+
+def _gttrf_abstract_eval(dl_aval, d_aval, du_aval):
+  return (
+      dl_aval,
+      d_aval,
+      du_aval,
+      d_aval,  # du2_out: same float shape as d
+      d_aval.update(dtype=np.dtype('int32')),  # ipiv_out
+  )
+
+
+def _gttrf_fallback(dl, d, du):
+  """Pure-JAX fallback: Thomas algorithm (no pivoting) for non-CPU platforms."""
+  n = d.shape[-1]
+
+  def step(carry, i):
+    dl_f, d_f, du2_f = carry
+    mult = lax.dynamic_index_in_dim(dl_f, i + 1, axis=-1, keepdims=False) / \
+           lax.dynamic_index_in_dim(d_f,  i,     axis=-1, keepdims=False)
+    dl_f  = lax.dynamic_update_index_in_dim(dl_f, mult, i + 1, axis=-1)
+    new_d = lax.dynamic_index_in_dim(d_f,  i + 1, axis=-1, keepdims=False) - \
+            mult * lax.dynamic_index_in_dim(du, i, axis=-1, keepdims=False)
+    d_f   = lax.dynamic_update_index_in_dim(d_f, new_d, i + 1, axis=-1)
+    return (dl_f, d_f, du2_f), None
+
+  du2_init = jnp.zeros_like(d)
+  (dl_out, d_out, du2_out), _ = lax.scan(
+      step, (dl, d, du2_init), jnp.arange(n - 1))
+  ipiv_out = jnp.broadcast_to(
+      jnp.arange(1, n + 1, dtype=jnp.int32), d.shape)
+  return dl_out, d_out, du, du2_out, ipiv_out
+
+
+def _gttrf_cpu_lowering(ctx, dl, d, du, **kwargs):
+  del kwargs
+  d_aval = ctx.avals_in[1]
+  target_name = lapack.prepare_lapack_call("gttrf_ffi", d_aval.dtype)
+  # Use ffi_lowering directly: our inputs are rank-1 (1D diagonals), so
+  # _linalg_ffi_lowering's sharding rule (which assumes rank-2) would fail.
+  rule = _jax_ffi.ffi_lowering(target_name, operand_output_aliases={0: 0, 1: 1, 2: 2})
+  return rule(ctx, dl, d, du)
+
+
+gttrf_p = core.Primitive("gttrf")
+gttrf_p.multiple_results = True
+gttrf_p.def_abstract_eval(_gttrf_abstract_eval)
+gttrf_p.def_impl(partial(dispatch.apply_primitive, gttrf_p))
+
+mlir.register_lowering(gttrf_p, mlir.lower_fun(
+    _gttrf_fallback, multiple_results=True))
+mlir.register_lowering(gttrf_p, _gttrf_cpu_lowering, platform='cpu')
+
+
+def _gttrf_batching_rule(batched_args, batch_dims):
+  dl, d, du = batched_args
+  bdl, bd, bdu = batch_dims
+  size = next(a.shape[i] for a, i in zip([dl, d, du], [bdl, bd, bdu])
+              if i is not None)
+  dl = batching.bdim_at_front(dl, bdl, size)
+  d  = batching.bdim_at_front(d,  bd,  size)
+  du = batching.bdim_at_front(du, bdu, size)
+  results = gttrf_p.bind(dl, d, du)
+  return results, (0,) * len(results)
+
+batching.primitive_batchers[gttrf_p] = _gttrf_batching_rule
+
+
+# ---------------------------------------------------------------------------
+# Determinant helpers built on gttrf
+# ---------------------------------------------------------------------------
+
+def tridiag_logdet_lu(
+    a: ArrayLike, b: ArrayLike, c: ArrayLike
+) -> tuple[Array, Array]:
+  """Log-determinant of a tridiagonal matrix via LAPACK gttrf.
+
+  Computes ``(sign, log|det(A)|)`` where A is the tridiagonal matrix with
+  subdiagonal ``a``, main diagonal ``b``, and superdiagonal ``c``.
+
+  Input convention matches the user-facing scan-based functions:
+
+    ``a[i]`` = A[i+1, i]  for i in [0, n-2]   — subdiagonal  (n-1,)
+    ``b[i]`` = A[i, i]    for i in [0, n-1]   — main diagonal (n,)
+    ``c[i]`` = A[i, i+1]  for i in [0, n-2]   — superdiagonal (n-1,)
+
+  Returns:
+    A two-tuple ``(sign, logabsdet)`` of scalars.
+  """
+  a = jnp.asarray(a)
+  b = jnp.asarray(b)
+  c = jnp.asarray(c)
+  n = b.shape[-1]
+  # Pad a and c to length n (JAX tridiagonal convention).
+  zeros = jnp.zeros(a.shape[:-1] + (1,), dtype=a.dtype)
+  dl = jnp.concatenate([zeros, a], axis=-1)   # dl[..., 0] = 0 (padding)
+  du = jnp.concatenate([c, zeros], axis=-1)   # du[..., n-1] = 0 (padding)
+  _, d_out, _, _, ipiv_out = gttrf(dl, b, du)
+  # det(A) = prod(U diagonal) * (-1)^(number of row swaps)
+  logabsdet = jnp.sum(jnp.log(jnp.abs(d_out)), axis=-1)
+  swaps = jnp.sum(
+      ipiv_out != jnp.arange(1, n + 1, dtype=jnp.int32), axis=-1)
+  sign = jnp.prod(jnp.sign(d_out), axis=-1) * ((-1.0) ** swaps)
+  return sign, logabsdet
+
+
+tridiag_logdet_lu_jit = jax.jit(tridiag_logdet_lu)
+tridiag_logdet_lu_batched = jax.jit(jax.vmap(tridiag_logdet_lu))

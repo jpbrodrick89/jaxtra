@@ -285,4 +285,71 @@ template struct HermitianPentadiagonalSolve<ffi::DataType::F64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C64>;
 template struct HermitianPentadiagonalSolve<ffi::DataType::C128>;
 
+// ===========================================================================
+// TridiagLuFactor — LAPACK gttrf (tridiagonal LU factorization)
+// ===========================================================================
+
+template <ffi::DataType dtype>
+ffi::Error TridiagLuFactor<dtype>::Kernel(
+    ffi::Buffer<dtype> dl, ffi::Buffer<dtype> d, ffi::Buffer<dtype> du,
+    ffi::ResultBuffer<dtype> dl_out, ffi::ResultBuffer<dtype> d_out,
+    ffi::ResultBuffer<dtype> du_out, ffi::ResultBuffer<dtype> du2_out,
+    ffi::ResultBuffer<ffi::DataType::S32> ipiv_out) {
+  // d has shape (*, n) — use it to extract batch count and n.
+  auto dims_result = SplitBatch1D(d.dimensions());
+  if (dims_result.has_error()) return std::move(dims_result.error());
+  auto [batch_count, n] = *dims_result;
+
+  FFI_ASSIGN_OR_RETURN(auto n_v, MaybeCastNoOverflow<int>(n));
+
+  // Copy inputs to outputs (CopyIfDiffBuffer is a no-op when XLA aliases them).
+  CopyIfDiffBuffer(dl, dl_out);
+  CopyIfDiffBuffer(d, d_out);
+  CopyIfDiffBuffer(du, du_out);
+
+  // du2_out is a new buffer (no alias). Zero-init so the unused trailing
+  // elements (positions n-2 and n-1 per batch) remain deterministic.
+  std::fill(du2_out->typed_data(),
+            du2_out->typed_data() + batch_count * n,
+            ValueType{0});
+
+  auto* dl_data   = dl_out->typed_data();
+  auto* d_data    = d_out->typed_data();
+  auto* du_data   = du_out->typed_data();
+  auto* du2_data  = du2_out->typed_data();
+  auto* ipiv_data = ipiv_out->typed_data();
+
+  for (int64_t batch = 0; batch < batch_count; ++batch) {
+    int info = 0;
+    // JAX padding convention:  dl[..., 0] is unused padding;  the actual
+    // subdiagonal starts at dl[..., 1].  LAPACK expects dl[0] = A[1,0], so
+    // we pass dl_data + 1 to skip the padding element.  Similarly, du is
+    // length n with du[..., n-1] as unused padding, but LAPACK only reads
+    // du[0..n-2], so passing du_data directly is correct.
+    // du2_out receives positions 0..n-3; positions n-2 and n-1 stay 0.
+    fn(&n_v,
+       const_cast<ValueType*>(dl_data + 1),  // skip dl[..., 0] padding
+       const_cast<ValueType*>(d_data),
+       const_cast<ValueType*>(du_data),
+       du2_data,
+       ipiv_data,
+       &info);
+    // info > 0 means U is singular; follow jaxlib convention of not raising.
+    dl_data   += n;
+    d_data    += n;
+    du_data   += n;
+    du2_data  += n;
+    ipiv_data += n;
+  }
+  return ffi::Error::Success();
+}
+
+// ---------------------------------------------------------------------------
+// Explicit instantiations — TridiagLuFactor
+// ---------------------------------------------------------------------------
+template struct TridiagLuFactor<ffi::DataType::F32>;
+template struct TridiagLuFactor<ffi::DataType::F64>;
+template struct TridiagLuFactor<ffi::DataType::C64>;
+template struct TridiagLuFactor<ffi::DataType::C128>;
+
 }  // namespace jaxtra

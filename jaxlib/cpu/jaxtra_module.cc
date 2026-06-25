@@ -68,6 +68,27 @@ JAXTRA_CPU_DEFINE_GBSV(lapack_cgbsv_ffi, ffi::DataType::C64);
 JAXTRA_CPU_DEFINE_GBSV(lapack_zgbsv_ffi, ffi::DataType::C128);
 
 // ---------------------------------------------------------------------------
+// Handler macro for tridiagonal LU factorization (LAPACK gttrf).
+// ---------------------------------------------------------------------------
+#define JAXTRA_CPU_DEFINE_GTTRF(name, dtype)                      \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(                                   \
+      name, TridiagLuFactor<dtype>::Kernel,                        \
+      ffi::Ffi::Bind()                                             \
+          .Arg<ffi::Buffer<dtype>>()            /* dl     */       \
+          .Arg<ffi::Buffer<dtype>>()            /* d      */       \
+          .Arg<ffi::Buffer<dtype>>()            /* du     */       \
+          .Ret<ffi::Buffer<dtype>>()            /* dl_out */       \
+          .Ret<ffi::Buffer<dtype>>()            /* d_out  */       \
+          .Ret<ffi::Buffer<dtype>>()            /* du_out */       \
+          .Ret<ffi::Buffer<dtype>>()            /* du2_out */      \
+          .Ret<ffi::Buffer<ffi::DataType::S32>>()) /* ipiv_out */
+
+JAXTRA_CPU_DEFINE_GTTRF(lapack_sgttrf_ffi, ffi::DataType::F32);
+JAXTRA_CPU_DEFINE_GTTRF(lapack_dgttrf_ffi, ffi::DataType::F64);
+JAXTRA_CPU_DEFINE_GTTRF(lapack_cgttrf_ffi, ffi::DataType::C64);
+JAXTRA_CPU_DEFINE_GTTRF(lapack_zgttrf_ffi, ffi::DataType::C128);
+
+// ---------------------------------------------------------------------------
 // Handler macro for Hermitian pentadiagonal solve (LAPACK pbsv, KD=2).
 // ---------------------------------------------------------------------------
 #define JAXTRA_CPU_DEFINE_PBSV(name, dtype)                      \
@@ -115,6 +136,10 @@ NB_MODULE(_jaxtra, m) {
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::F64>>(lapack_ptr("dpbsv"));
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C64>>(lapack_ptr("cpbsv"));
     AssignKernelFn<HermitianPentadiagonalSolve<ffi::DataType::C128>>(lapack_ptr("zpbsv"));
+    AssignKernelFn<TridiagLuFactor<ffi::DataType::F32>>(lapack_ptr("sgttrf"));
+    AssignKernelFn<TridiagLuFactor<ffi::DataType::F64>>(lapack_ptr("dgttrf"));
+    AssignKernelFn<TridiagLuFactor<ffi::DataType::C64>>(lapack_ptr("cgttrf"));
+    AssignKernelFn<TridiagLuFactor<ffi::DataType::C128>>(lapack_ptr("zgttrf"));
   });
 
   // registrations() — returns {platform: [(name, capsule, api_version)]}
@@ -140,6 +165,10 @@ NB_MODULE(_jaxtra, m) {
     make_entry("lapack_dpbsv_ffi",  reinterpret_cast<void*>(lapack_dpbsv_ffi));
     make_entry("lapack_cpbsv_ffi",  reinterpret_cast<void*>(lapack_cpbsv_ffi));
     make_entry("lapack_zpbsv_ffi",  reinterpret_cast<void*>(lapack_zpbsv_ffi));
+    make_entry("lapack_sgttrf_ffi", reinterpret_cast<void*>(lapack_sgttrf_ffi));
+    make_entry("lapack_dgttrf_ffi", reinterpret_cast<void*>(lapack_dgttrf_ffi));
+    make_entry("lapack_cgttrf_ffi", reinterpret_cast<void*>(lapack_cgttrf_ffi));
+    make_entry("lapack_zgttrf_ffi", reinterpret_cast<void*>(lapack_zgttrf_ffi));
     out["cpu"] = cpu_targets;
     return out;
   });
