@@ -31,7 +31,7 @@ jobs:
             cibw_platform: macos
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # ── QEMU for Linux aarch64 cross-compilation ────────────────────────
       - name: Set up QEMU
@@ -41,7 +41,7 @@ jobs:
           platforms: arm64
 
       # ── Build wheels ─────────────────────────────────────────────────────
-      - uses: pypa/cibuildwheel@v3.4
+      - uses: pypa/cibuildwheel@v4.1
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp311-* cp312-* cp313-* cp314-*"
@@ -72,9 +72,9 @@ jobs:
   build_sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
