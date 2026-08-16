@@ -1,57 +1,71 @@
 n,variant,method,time_ms
-64,unbatched,simple (unroll=16),0.01703800000996125
-64,unbatched,frexp  (unroll=16),0.12590050005201192
-64,unbatched,stable (unroll=1),0.046510000004218455
-64,unbatched,gttrf  (LAPACK),0.03354200003968799
-128,unbatched,simple (unroll=16),0.017355000011320953
-128,unbatched,frexp  (unroll=16),0.15808550000429022
-128,unbatched,stable (unroll=1),0.031384000010348245
-128,unbatched,gttrf  (LAPACK),0.09993200001190417
-256,unbatched,simple (unroll=16),0.017743500052347372
-256,unbatched,frexp  (unroll=16),0.2694835000625062
-256,unbatched,stable (unroll=1),0.0486039999714194
-256,unbatched,gttrf  (LAPACK),0.11399700002812096
-512,unbatched,simple (unroll=16),0.08635349996666264
-512,unbatched,frexp  (unroll=16),0.45402849997344674
-512,unbatched,stable (unroll=1),0.06292099999427592
-512,unbatched,gttrf  (LAPACK),0.1135959999487568
-1024,unbatched,simple (unroll=16),0.1179929999466367
-1024,unbatched,frexp  (unroll=16),0.7283284999743955
-1024,unbatched,stable (unroll=1),0.19032249997508188
-1024,unbatched,gttrf  (LAPACK),0.14082600006304347
-2048,unbatched,simple (unroll=16),0.09683449997055504
-2048,unbatched,frexp  (unroll=16),1.4141414999926383
-2048,unbatched,stable (unroll=1),0.2660399999854235
-2048,unbatched,gttrf  (LAPACK),0.13642449999906603
-4096,unbatched,simple (unroll=16),0.09003699994991621
-4096,unbatched,frexp  (unroll=16),2.649788000042008
-4096,unbatched,stable (unroll=1),0.43152199998530705
-4096,unbatched,gttrf  (LAPACK),0.1912010000069131
-64,batched=64,simple (unroll=16),0.0866185000063524
-64,batched=64,frexp  (unroll=16),1.7864865000092323
-64,batched=64,stable (unroll=1),0.43700600002694046
-64,batched=64,gttrf  (LAPACK),0.20729699997446005
-128,batched=64,simple (unroll=16),0.12096949996021067
-128,batched=64,frexp  (unroll=16),3.021051000018815
-128,batched=64,stable (unroll=1),0.6085659999826021
-128,batched=64,gttrf  (LAPACK),0.3822069999728228
-256,batched=64,simple (unroll=16),0.21601200000986864
-256,batched=64,frexp  (unroll=16),5.934361000015542
-256,batched=64,stable (unroll=1),1.1956604999454612
-256,batched=64,gttrf  (LAPACK),0.5473054999924898
-512,batched=64,simple (unroll=16),0.47645950007790816
-512,batched=64,frexp  (unroll=16),9.80233800004271
-512,batched=64,stable (unroll=1),2.827468500015584
-512,batched=64,gttrf  (LAPACK),0.9464005000268116
-1024,batched=64,simple (unroll=16),0.6317794999972648
-1024,batched=64,frexp  (unroll=16),23.079604499969264
-1024,batched=64,stable (unroll=1),4.43941549997362
-1024,batched=64,gttrf  (LAPACK),1.8978315000026669
-2048,batched=64,simple (unroll=16),1.0784549999698356
-2048,batched=64,frexp  (unroll=16),45.1020830000175
-2048,batched=64,stable (unroll=1),8.51194099999475
-2048,batched=64,gttrf  (LAPACK),3.37985849995448
-4096,batched=64,simple (unroll=16),1.9639664999999695
-4096,batched=64,frexp  (unroll=16),89.16096550001384
-4096,batched=64,stable (unroll=1),17.093554000041422
-4096,batched=64,gttrf  (LAPACK),6.313216999956239
+64,unbatched,"simple  (unroll=16, overflows)",0.013900999988436524
+64,unbatched,frexp   (unroll=16),0.11245849998431368
+64,unbatched,stable  (unroll=1),0.018574500018075923
+64,unbatched,blocked (K=16 + log/block),0.014186999976573134
+64,unbatched,gttrf   (LAPACK),0.019515500014222198
+128,unbatched,"simple  (unroll=16, overflows)",0.013999500026784517
+128,unbatched,frexp   (unroll=16),0.15327199997727803
+128,unbatched,stable  (unroll=1),0.022754500037081016
+128,unbatched,blocked (K=16 + log/block),0.017544499996802188
+128,unbatched,gttrf   (LAPACK),0.07776699999340053
+256,unbatched,"simple  (unroll=16, overflows)",0.014027000020178093
+256,unbatched,frexp   (unroll=16),0.22903650000216658
+256,unbatched,stable  (unroll=1),0.03443599996444391
+256,unbatched,blocked (K=16 + log/block),0.02094899997473476
+256,unbatched,gttrf   (LAPACK),0.08062399996333625
+512,unbatched,"simple  (unroll=16, overflows)",0.01881849999563201
+512,unbatched,frexp   (unroll=16),0.42263399996045337
+512,unbatched,stable  (unroll=1),0.04672900001878588
+512,unbatched,blocked (K=16 + log/block),0.028075999978227628
+512,unbatched,gttrf   (LAPACK),0.08994249992611003
+1024,unbatched,"simple  (unroll=16, overflows)",0.0848535000272932
+1024,unbatched,frexp   (unroll=16),0.6855634999851645
+1024,unbatched,stable  (unroll=1),0.1555764999920939
+1024,unbatched,blocked (K=16 + log/block),0.11268250000284752
+1024,unbatched,gttrf   (LAPACK),0.11538399996879889
+2048,unbatched,"simple  (unroll=16, overflows)",0.07952549998435643
+2048,unbatched,frexp   (unroll=16),1.2433140000212006
+2048,unbatched,stable  (unroll=1),0.19791450000639088
+2048,unbatched,blocked (K=16 + log/block),0.13826699995433955
+2048,unbatched,gttrf   (LAPACK),0.12111249998270068
+4096,unbatched,"simple  (unroll=16, overflows)",0.09771800006319609
+4096,unbatched,frexp   (unroll=16),2.372375000049942
+4096,unbatched,stable  (unroll=1),0.3598374999569387
+4096,unbatched,blocked (K=16 + log/block),0.20085900001731716
+4096,unbatched,gttrf   (LAPACK),0.15132299995457288
+64,batched=64,"simple  (unroll=16, overflows)",0.08516249999956926
+64,batched=64,frexp   (unroll=16),1.45344349999732
+64,batched=64,stable  (unroll=1),0.2595060000203375
+64,batched=64,blocked (K=16 + log/block),0.08856800002376986
+64,batched=64,gttrf   (LAPACK),0.1526304999970307
+128,batched=64,"simple  (unroll=16, overflows)",0.09474800003772543
+128,batched=64,frexp   (unroll=16),2.6903345000164336
+128,batched=64,stable  (unroll=1),0.4676534999816795
+128,batched=64,blocked (K=16 + log/block),0.11593699997547446
+128,batched=64,gttrf   (LAPACK),0.25761949996194744
+256,batched=64,"simple  (unroll=16, overflows)",0.11951900000894966
+256,batched=64,frexp   (unroll=16),5.618486000003031
+256,batched=64,stable  (unroll=1),0.8633249999547843
+256,batched=64,blocked (K=16 + log/block),0.17184949996362775
+256,batched=64,gttrf   (LAPACK),0.4788109999935841
+512,batched=64,"simple  (unroll=16, overflows)",0.34627050001745374
+512,batched=64,frexp   (unroll=16),8.774764999941453
+512,batched=64,stable  (unroll=1),1.6841584999838233
+512,batched=64,blocked (K=16 + log/block),0.3712215000177821
+512,batched=64,gttrf   (LAPACK),1.0228360000041903
+1024,batched=64,"simple  (unroll=16, overflows)",0.4989329999602887
+1024,batched=64,frexp   (unroll=16),17.136397499996292
+1024,batched=64,stable  (unroll=1),3.4131720000232235
+1024,batched=64,blocked (K=16 + log/block),0.6030059999488913
+1024,batched=64,gttrf   (LAPACK),1.522053999963191
+2048,batched=64,"simple  (unroll=16, overflows)",0.7681275000095411
+2048,batched=64,frexp   (unroll=16),35.95729350001875
+2048,batched=64,stable  (unroll=1),6.0939929999790365
+2048,batched=64,blocked (K=16 + log/block),1.0742930000446904
+2048,batched=64,gttrf   (LAPACK),3.010898999946221
+4096,batched=64,"simple  (unroll=16, overflows)",1.2305129999390374
+4096,batched=64,frexp   (unroll=16),69.57159050006112
+4096,batched=64,stable  (unroll=1),11.738540000010289
+4096,batched=64,blocked (K=16 + log/block),1.5912540000044828
+4096,batched=64,gttrf   (LAPACK),4.8100869999530005

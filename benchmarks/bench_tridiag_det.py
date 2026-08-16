@@ -1,11 +1,12 @@
 """
-Benchmark: tridiagonal log-det — five implementations
-======================================================
+Benchmark: tridiagonal log-det — six implementations
+=====================================================
 
-  simple : raw three-term recurrence, unroll=16  (overflows for large n)
-  frexp  : frexp/ldexp power-of-2 rescaling — stable, no per-step log/exp
-  stable : signed log-space recurrence, unroll=1
-  gttrf  : LAPACK gttrf tridiagonal LU → prod(U diagonal) + pivot sign
+  simple  : raw three-term recurrence, unroll=16  (overflows n≳1024 for b~N+4)
+  frexp   : frexp/ldexp power-of-2 rescaling — stable, no per-step log/exp
+  stable  : signed log-space recurrence, unroll=1
+  blocked : K=16 raw inner steps + one log/scale at each block boundary
+  gttrf   : LAPACK gttrf tridiagonal LU → prod(U diagonal) + pivot sign
 
 Both unbatched (single matrix) and batched (vmap, batch=64) are timed
 across n = 64 … 4096.
@@ -119,11 +120,65 @@ def tridiag_logdet_stable(
     return sgn_det, log_det
 
 
+@jax.jit
+def tridiag_logdet_blocked(
+    a: jnp.ndarray, b: jnp.ndarray, c: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Block rescaling: raw K-step recurrence + one log/scale per K steps.
+
+    Overflow-safe: both carry values are normalised to [-1, 1] at each block
+    boundary via one max/log/divide.  Within each block the recurrence is the
+    cheap raw form (no log/exp), so per-step cost approaches simple's.
+
+    Padding with (b=1, coup=0) extends the last block to a multiple of K;
+    identity steps D_k = 1*D_{k-1} - 0*D_{k-2} = D_{k-1} leave the value
+    unchanged, so they do not affect correctness.
+    """
+    K = 16
+    n = b.shape[0]
+    coupling = jnp.concatenate([jnp.array([0.0]), a * c])
+
+    # Initial normalisation: bring (f2, f1) = (1, b[0]) into [-1, 1].
+    scale0  = jnp.maximum(jnp.abs(b[0]), 1.0)
+    f2_init = jnp.ones((), dtype=b.dtype) / scale0
+    f1_init = b[0] / scale0
+    log_s   = jnp.log(scale0)
+
+    def inner_step(carry, xs):
+        f2, f1 = carry
+        b_i, coup_i = xs
+        return (f1, b_i * f1 - coup_i * f2), None
+
+    def outer_step(carry, xs):
+        f2, f1, log_acc = carry
+        b_blk, c_blk = xs
+        (f2_new, f1_new), _ = lax.scan(
+            inner_step, (f2, f1), (b_blk, c_blk), unroll=K)
+        scale = jnp.maximum(jnp.abs(f2_new), jnp.abs(f1_new))
+        return (f2_new / scale, f1_new / scale, log_acc + jnp.log(scale)), None
+
+    # Pad b[1:] / coupling[1:] to a multiple of K with identity-step values.
+    n_rest   = n - 1
+    n_pad    = (-n_rest) % K
+    b_rest   = jnp.concatenate([b[1:],       jnp.ones(n_pad,  dtype=b.dtype)])
+    c_rest   = jnp.concatenate([coupling[1:], jnp.zeros(n_pad, dtype=b.dtype)])
+    n_blocks = (n_rest + n_pad) // K
+
+    b_blocks = b_rest.reshape(n_blocks, K)
+    c_blocks = c_rest.reshape(n_blocks, K)
+
+    (_, f1_final, log_s), _ = lax.scan(
+        outer_step, (f2_init, f1_init, log_s), (b_blocks, c_blocks))
+
+    return jnp.sign(f1_final), log_s + jnp.log(jnp.abs(f1_final))
+
+
 # Batched variants
-_simple_b = jax.jit(jax.vmap(tridiag_logdet_simple))
-_frexp_b  = jax.jit(jax.vmap(tridiag_logdet_frexp))
-_stable_b = jax.jit(jax.vmap(tridiag_logdet_stable))
-_gttrf_b  = jax.jit(jax.vmap(tridiag_logdet_lu))
+_simple_b  = jax.jit(jax.vmap(tridiag_logdet_simple))
+_frexp_b   = jax.jit(jax.vmap(tridiag_logdet_frexp))
+_stable_b  = jax.jit(jax.vmap(tridiag_logdet_stable))
+_blocked_b = jax.jit(jax.vmap(tridiag_logdet_blocked))
+_gttrf_b   = jax.jit(jax.vmap(tridiag_logdet_lu))
 
 # ---------------------------------------------------------------------------
 # Timing
@@ -154,14 +209,15 @@ def check_correctness(n=512):
 
     a, b, c = jnp.array(a_np), jnp.array(b_np), jnp.array(c_np)
     results = {
-        "simple": tridiag_logdet_simple(a, b, c),
-        "frexp":  tridiag_logdet_frexp(a, b, c),
-        "stable": tridiag_logdet_stable(a, b, c),
-        "gttrf":  tridiag_logdet_lu(a, b, c),
+        "simple":  tridiag_logdet_simple(a, b, c),
+        "frexp":   tridiag_logdet_frexp(a, b, c),
+        "stable":  tridiag_logdet_stable(a, b, c),
+        "blocked": tridiag_logdet_blocked(a, b, c),
+        "gttrf":   tridiag_logdet_lu(a, b, c),
     }
     for name, (_, ldet) in results.items():
         err = abs(float(ldet) - ref)
-        print(f"  [{name:6s}] logdet={float(ldet):.6f}  err={err:.2e}  "
+        print(f"  [{name:7s}] logdet={float(ldet):.6f}  err={err:.2e}  "
               f"{'OK' if err < 1e-8 else 'FAIL'}")
 
 # ---------------------------------------------------------------------------
@@ -174,18 +230,31 @@ RNG   = np.random.default_rng(42)
 
 IMPLS = [
     # (key, label, color, marker)
-    ("simple", "simple (unroll=16)",    "#2ca02c", "^"),
-    ("frexp",  "frexp  (unroll=16)",    "#9467bd", "D"),
-    ("stable", "stable (unroll=1)",     "#d62728", "v"),
-    ("gttrf",  "gttrf  (LAPACK)",       "#ff7f0e", "s"),
+    ("simple",  "simple  (unroll=16, overflows)",  "#2ca02c", "^"),
+    ("frexp",   "frexp   (unroll=16)",              "#9467bd", "D"),
+    ("stable",  "stable  (unroll=1)",               "#d62728", "v"),
+    ("blocked", "blocked (K=16 + log/block)",       "#1f77b4", "o"),
+    ("gttrf",   "gttrf   (LAPACK)",                 "#ff7f0e", "s"),
 ]
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
-print(f"Correctness check (n=512):")
+print("Correctness check (n=512):")
 check_correctness(512)
+print("\nOverflow check — simple overflows at n≳1024 for b~N(0,1)+4:")
+_rng_ov = np.random.default_rng(99)
+for _n in [512, 1024, 2048]:
+    _b = jnp.array(_rng_ov.standard_normal(_n) + 4.0)
+    _a = jnp.array(_rng_ov.standard_normal(_n - 1) * 0.5)
+    _c = jnp.array(_rng_ov.standard_normal(_n - 1) * 0.5)
+    _, _s  = tridiag_logdet_simple(_a, _b, _c)
+    _, _bl = tridiag_logdet_blocked(_a, _b, _c)
+    _, _st = tridiag_logdet_stable(_a, _b, _c)
+    print(f"  n={_n:5d}  simple={float(_s):10.2f}  blocked={float(_bl):10.2f}  "
+          f"stable={float(_st):10.2f}  "
+          f"{'[OVERFLOW]' if not jnp.isfinite(_s) else '[ok]':10s}")
 
 def _run_and_print(label, fns_ub, fns_b):
     hdr = (f"\n{label}\n"
@@ -223,19 +292,21 @@ for n in SIZES:
 
 fns_ub_by_n = {
     n: {
-        "simple": (jax.jit(tridiag_logdet_simple), inputs_ub[n]),
-        "frexp":  (jax.jit(tridiag_logdet_frexp),  inputs_ub[n]),
-        "stable": (jax.jit(tridiag_logdet_stable),  inputs_ub[n]),
-        "gttrf":  (jax.jit(tridiag_logdet_lu),      inputs_ub[n]),
+        "simple":  (jax.jit(tridiag_logdet_simple),  inputs_ub[n]),
+        "frexp":   (jax.jit(tridiag_logdet_frexp),   inputs_ub[n]),
+        "stable":  (jax.jit(tridiag_logdet_stable),  inputs_ub[n]),
+        "blocked": (jax.jit(tridiag_logdet_blocked), inputs_ub[n]),
+        "gttrf":   (jax.jit(tridiag_logdet_lu),      inputs_ub[n]),
     }
     for n in SIZES
 }
 fns_b_by_n = {
     n: {
-        "simple": (_simple_b, inputs_b[n]),
-        "frexp":  (_frexp_b,  inputs_b[n]),
-        "stable": (_stable_b, inputs_b[n]),
-        "gttrf":  (_gttrf_b,  inputs_b[n]),
+        "simple":  (_simple_b,  inputs_b[n]),
+        "frexp":   (_frexp_b,   inputs_b[n]),
+        "stable":  (_stable_b,  inputs_b[n]),
+        "blocked": (_blocked_b, inputs_b[n]),
+        "gttrf":   (_gttrf_b,   inputs_b[n]),
     }
     for n in SIZES
 }
@@ -291,7 +362,7 @@ for ax, variant, title in zip(axes, panel_variants, panel_titles):
     ax.legend(fontsize=9)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
 
-fig.suptitle("Tridiagonal log-det: five implementations", fontsize=14)
+fig.suptitle("Tridiagonal log-det: six implementations", fontsize=14)
 fig.tight_layout()
 out = RESULTS_DIR / "bench_tridiag_det.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")
